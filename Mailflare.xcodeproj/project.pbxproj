@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		04869B6030888BBF006F9185 /* Hugeicons in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F600010000AA03 /* Hugeicons */; };
+		A1B2C3D4E5F600010000BB02 /* MailflareCore in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F600010000BB03 /* MailflareCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		049EB8F53088886A00838D5E /* Mailflare.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mailflare.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +28,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				04869B6030888BBF006F9185 /* Hugeicons in Frameworks */,
+				A1B2C3D4E5F600010000BB02 /* MailflareCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +72,8 @@
 			);
 			name = Mailflare;
 			packageProductDependencies = (
+				A1B2C3D4E5F600010000AA03 /* Hugeicons */,
+				A1B2C3D4E5F600010000BB03 /* MailflareCore */,
 			);
 			productName = Mailflare;
 			productReference = 049EB8F53088886A00838D5E /* Mailflare.app */;
@@ -94,6 +103,10 @@
 			);
 			mainGroup = 049EB8EC3088886A00838D5E;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A1B2C3D4E5F600010000AA01 /* XCRemoteSwiftPackageReference "hugeicons-swift" */,
+				A1B2C3D4E5F600010000BB01 /* XCLocalSwiftPackageReference "../mailflare-core" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 049EB8F63088886A00838D5E /* Products */;
 			projectDirPath = "";
@@ -258,6 +271,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Mailflare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Mailflare;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -286,6 +301,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Mailflare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Mailflare;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -323,6 +340,36 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A1B2C3D4E5F600010000BB01 /* XCLocalSwiftPackageReference "../mailflare-core" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../mailflare-core";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A1B2C3D4E5F600010000AA01 /* XCRemoteSwiftPackageReference "hugeicons-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/iSapozhnik/hugeicons-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.1.7;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A1B2C3D4E5F600010000AA03 /* Hugeicons */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4E5F600010000AA01 /* XCRemoteSwiftPackageReference "hugeicons-swift" */;
+			productName = Hugeicons;
+		};
+		A1B2C3D4E5F600010000BB03 /* MailflareCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MailflareCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 049EB8ED3088886A00838D5E /* Project object */;
 }
