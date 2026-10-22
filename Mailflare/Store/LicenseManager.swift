@@ -36,6 +36,8 @@ final class LicenseManager {
 		static let active = "license.active"
 		static let validatedAt = "license.validatedAt"
 		static let servers = "license.servers"
+		static let brands = "license.brands"
+		static let brandOwner = "license.brandOwner"
 	}
 
 	/// The license key in use, if one was activated.
@@ -45,6 +47,16 @@ final class LicenseManager {
 	/// account is in view.
 	private(set) var licensedAccounts: Set<String>
 	var serverLicensed: Bool { !licensedAccounts.isEmpty }
+	/// The branding each licensed account's server sets. The app wears one of them whichever account
+	/// or service is in view, until every licensed account has signed out.
+	private var brands: [String: String]
+	private var brandOwner: String?
+
+	/// The app name from the licensed server, nil when no server license is active.
+	var brandName: String? {
+		if let owner = brandOwner, licensedAccounts.contains(owner), let name = brands[owner] { return name }
+		return licensedAccounts.sorted().lazy.compactMap { self.brands[$0] }.first
+	}
 	private(set) var busy = false
 	var message: String?
 
@@ -55,6 +67,8 @@ final class LicenseManager {
 	init() {
 		let defaults = UserDefaults.standard
 		licensedAccounts = Set(defaults.stringArray(forKey: Keys.servers) ?? [])
+		brands = defaults.dictionary(forKey: Keys.brands) as? [String: String] ?? [:]
+		brandOwner = defaults.string(forKey: Keys.brandOwner)
 		let key = LicenseKeychain().load()
 		licenseKey = key
 		let validated = defaults.object(forKey: Keys.validatedAt) as? Date
@@ -72,19 +86,36 @@ final class LicenseManager {
 
 	// MARK: Server license
 
-	/// Records whether an account's server has an active license. Remembered across launches so an
-	/// offline start still knows.
-	func setServerLicensed(_ licensed: Bool, accountID: String) {
-		if licensed { licensedAccounts.insert(accountID) } else { licensedAccounts.remove(accountID) }
-		UserDefaults.standard.set(Array(licensedAccounts), forKey: Keys.servers)
+	/// Records whether an account's server has an active license, and the app name it brands with.
+	/// Remembered across launches so an offline start still knows.
+	func setServerLicensed(_ licensed: Bool, accountID: String, brandName: String? = nil) {
+		if licensed {
+			licensedAccounts.insert(accountID)
+			if let brandName, !brandName.isEmpty { brands[accountID] = brandName }
+			if brandOwner == nil || !licensedAccounts.contains(brandOwner!) { brandOwner = accountID }
+		} else {
+			licensedAccounts.remove(accountID)
+			brands[accountID] = nil
+			if brandOwner == accountID { brandOwner = licensedAccounts.sorted().first }
+		}
+		persist()
 	}
 
-	/// Drops accounts that are no longer signed in.
+	/// Drops accounts that are no longer signed in. The app deactivates once none is left licensed.
 	func retain(accountIDs: [String]) {
 		let kept = licensedAccounts.intersection(accountIDs)
 		guard kept != licensedAccounts else { return }
 		licensedAccounts = kept
-		UserDefaults.standard.set(Array(kept), forKey: Keys.servers)
+		brands = brands.filter { kept.contains($0.key) }
+		if let owner = brandOwner, !kept.contains(owner) { brandOwner = kept.sorted().first }
+		persist()
+	}
+
+	private func persist() {
+		let defaults = UserDefaults.standard
+		defaults.set(Array(licensedAccounts), forKey: Keys.servers)
+		defaults.set(brands, forKey: Keys.brands)
+		defaults.set(brandOwner, forKey: Keys.brandOwner)
 	}
 
 	// MARK: Key

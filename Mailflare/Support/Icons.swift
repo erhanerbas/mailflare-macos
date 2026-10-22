@@ -5,8 +5,8 @@ import Hugeicons
 enum AppIcon {
 	case sidebar, filter, compose, reply, replyAll, forward, archive, trash, junk, folder, flag
 	case moreDown, search, allInboxes, vip, remind, drafts, sent, smartMailbox, inbox
-	case attachment, summarize, chevronRight, chevronDown, clock, close, send, add, check, signOut, appearance, settings, info, more, bell
-	case crown, arrowLeft, label, unsubscribe, block, sourceCode, cancel, minimize, bold, italic, underline, strikethrough, bulletList, numberList, quote, link, clearFormat
+	case attachment, summarize, chevronRight, chevronDown, clock, close, send, add, addCircle, check, signOut, appearance, settings, info, more, bell
+	case crown, arrowLeft, sparkles, edit, colors, download, copy, label, unsubscribe, block, sourceCode, cancel, minimize, bold, italic, underline, strikethrough, bulletList, numberList, quote, link, clearFormat, undo, redo, support
 
 	var asset: HugeiconsAsset {
 		switch self {
@@ -35,9 +35,10 @@ enum AppIcon {
 		case .chevronRight: Hugeicons.arrowRight01
 		case .chevronDown: Hugeicons.arrowDown01
 		case .clock: Hugeicons.alarmClock
-		case .close: Hugeicons.delete01
+		case .close: Hugeicons.cancel01
 		case .send: Hugeicons.mailSend01
 		case .add: Hugeicons.add01
+		case .addCircle: Hugeicons.addCircle
 		case .check: Hugeicons.tick02
 		case .signOut: Hugeicons.logout01
 		case .appearance: Hugeicons.sun03
@@ -58,10 +59,18 @@ enum AppIcon {
 		case .bulletList: Hugeicons.leftToRightListBullet
 		case .numberList: Hugeicons.leftToRightListNumber
 		case .arrowLeft: Hugeicons.arrowLeft02
+		case .edit: Hugeicons.edit02
+		case .download: Hugeicons.download01
+		case .copy: Hugeicons.copy01
+		case .colors: Hugeicons.colors
+		case .sparkles: Hugeicons.sparkles
 		case .crown: Hugeicons.crown
 		case .quote: Hugeicons.quoteDown
 		case .link: Hugeicons.link01
 		case .clearFormat: Hugeicons.textClear
+		case .undo: Hugeicons.undo03
+		case .redo: Hugeicons.redo03
+		case .support: Hugeicons.customerSupport
 		}
 	}
 }

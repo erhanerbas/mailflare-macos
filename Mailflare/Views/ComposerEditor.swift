@@ -14,6 +14,8 @@ final class ComposerController {
 	private(set) var formats = ComposerFormats()
 	/// Set when ⌘K is pressed in the editor; the toolbar opens its link field and clears it.
 	var linkRequested = false
+	private(set) var canUndo = false
+	private(set) var canRedo = false
 	@ObservationIgnored fileprivate weak var webView: WKWebView?
 
 	func bold() { run("bold") }
@@ -22,6 +24,8 @@ final class ComposerController {
 	func strikethrough() { run("strikeThrough") }
 	func bulletList() { run("insertUnorderedList") }
 	func numberList() { run("insertOrderedList") }
+	func undo() { run("undo") }
+	func redo() { run("redo") }
 	func quote() { script("__mf.quote()") }
 	func clearFormatting() { script("__mf.clear()") }
 	func focus() { script("__mf.focus()") }
@@ -38,10 +42,18 @@ final class ComposerController {
 	/// Inserts HTML at the caret, or at the end when the editor was never focused.
 	func insert(html: String) { script("__mf.insert(\(Self.literal(ComposerEditor.sanitize(html))))") }
 
+	/// Replaces the whole body as one undoable edit, for the AI writer.
+	func replaceAll(html: String) { script("__mf.replaceAll(\(Self.literal(ComposerEditor.sanitize(html))))") }
+
 	private func run(_ command: String) { script("__mf.run(\(Self.literal(command)))") }
 
 	private func script(_ source: String) {
 		webView?.evaluateJavaScript(source, in: nil, in: .defaultClient) { _ in }
+	}
+
+	fileprivate func applyHistory(_ state: [String: Any]) {
+		canUndo = state["undo"] as? Bool ?? false
+		canRedo = state["redo"] as? Bool ?? false
 	}
 
 	fileprivate func apply(_ state: [String: Any]) {
@@ -98,6 +110,7 @@ struct ComposerEditor: NSViewRepresentable {
 				switch name {
 				case "html": parent.onChange(payload["body"] as? String ?? "")
 				case "state": parent.controller.apply(payload["body"] as? [String: Any] ?? [:])
+				case "history": parent.controller.applyHistory(payload["body"] as? [String: Any] ?? [:])
 				case "link": parent.controller.linkRequested = true
 				default: break
 				}
@@ -164,7 +177,11 @@ struct ComposerEditor: NSViewRepresentable {
 		if (!ed) return;
 		const post = (name, body) => window.webkit.messageHandlers.composer.postMessage({ name, body });
 		const html = () => (ed.innerText.trim() === "" && !ed.querySelector("img")) ? "" : ed.innerHTML;
-		const emit = () => post("html", html());
+		const history = () => {
+			const can = c => { try { return document.queryCommandEnabled(c); } catch (e) { return false; } };
+			post("history", { undo: can("undo"), redo: can("redo") });
+		};
+		const emit = () => { post("html", html()); history(); };
 		const state = () => {
 			if (document.activeElement !== ed) return;
 			const q = c => { try { return document.queryCommandState(c); } catch (e) { return false; } };
@@ -206,6 +223,13 @@ struct ComposerEditor: NSViewRepresentable {
 			},
 			clear() { ed.focus(); document.execCommand("removeFormat"); document.execCommand("unlink"); emit(); state(); },
 			focus() { ed.focus(); },
+			replaceAll(markup) {
+				ed.focus();
+				const r = document.createRange(); r.selectNodeContents(ed);
+				const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+				if (markup === "") document.execCommand("delete"); else document.execCommand("insertHTML", false, markup);
+				emit(); state();
+			},
 			remember() { const s = getSelection(); saved = s.rangeCount && ed.contains(s.anchorNode) ? s.getRangeAt(0).cloneRange() : null; },
 			link(url) {
 				restore();

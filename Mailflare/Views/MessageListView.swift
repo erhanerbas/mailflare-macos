@@ -41,8 +41,12 @@ struct MessageListView: View {
 		.frame(height: PaneHeader.height)
 	}
 
-	/// Every row has this height, so which rows are on screen follows from the scroll offset alone.
+	/// A row is at most this tall (sender, subject, two preview lines). A row with a shorter preview is
+	/// shorter, but its height still follows from the message alone (see `RowMetrics`), so which rows
+	/// are on screen follows from the scroll offset without laying any of them out.
 	static let rowHeight: CGFloat = 92
+	@State private var metrics = RowMetrics()
+	@State private var listWidth: CGFloat = 360
 	/// Rows are kept for the visible page plus this many pages above and below it.
 	private static let bufferPages = 2
 
@@ -56,6 +60,7 @@ struct MessageListView: View {
 			ScrollView {
 				rows
 			}
+			.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { listWidth = $0 }
 			.focusable()
 			.focusEffectDisabled()
 			.onMoveCommand { direction in
@@ -83,7 +88,7 @@ struct MessageListView: View {
 	/// Called by the scroll observer whenever the list scrolls or is resized; moves the window of
 	/// built rows so a row is a real view by the time it scrolls into sight.
 	private func scrolled(offset: CGFloat, viewport: CGFloat) {
-		let row = max(0, Int((offset / Self.rowHeight).rounded(.down)))
+		let row = metrics.row(at: offset)
 		if row != firstVisibleRow { firstVisibleRow = row }
 		if abs(viewport - viewportHeight) > 1 { viewportHeight = viewport }
 	}
@@ -91,12 +96,13 @@ struct MessageListView: View {
 	private var rows: some View {
 		let messages = store.messages
 		let count = messages.count
+		metrics.update(messages: messages, width: listWidth, isDraft: { store.role(of: $0) == "drafts" })
 		let pageRows = max(1, Int((viewportHeight / Self.rowHeight).rounded(.up)))
 		let first = min(firstVisibleRow, max(count - 1, 0))
 		let start = max(0, first - Self.bufferPages * pageRows)
 		let end = min(count, first + (Self.bufferPages + 1) * pageRows)
 		return VStack(spacing: 0) {
-			Color.clear.frame(height: CGFloat(start) * Self.rowHeight)
+			Color.clear.frame(height: metrics.offset(of: start))
 			if start < end {
 				ForEach(Array(messages[start..<end].enumerated()), id: \.element.id) { offset, message in
 					let index = start + offset
@@ -104,14 +110,16 @@ struct MessageListView: View {
 					let selected = message.id == store.selectedID
 					MessageRow(
 						message: message, isDraft: store.role(of: message) == "drafts", isSelected: selected,
-						showsDivider: index < count - 1 && !selected && !nextIsSelected)
+						sourceAccount: store.activeViewID == nil ? nil : store.accountID(of: message),
+						showsDivider: index < count - 1 && !selected && !nextIsSelected,
+						height: metrics.height(at: index))
 						.id(message.id)
 						.onTapGesture { store.select(message.id) }
 						.contextMenu { menu(for: message) }
 						.onAppear { store.loadMoreIfNeeded(current: message) }
 				}
 			}
-			Color.clear.frame(height: CGFloat(max(count - end, 0)) * Self.rowHeight)
+			Color.clear.frame(height: max(metrics.offset(of: count) - metrics.offset(of: end), 0))
 		}
 		.background(ScrollObserver { offset, viewport in scrolled(offset: offset, viewport: viewport) })
 		.padding(.vertical, 4)
@@ -137,10 +145,16 @@ struct MessageRow: View {
 	/// Where a row's text starts: room on the left for the unread dot, and breathing space for read mail.
 	static let textInset: CGFloat = 30
 
+	@Environment(MailStore.self) private var store
+
 	let message: MessageSummary
 	let isDraft: Bool
 	let isSelected: Bool
+	/// In an inbox view, the account the message came from.
+	var sourceAccount: String? = nil
 	let showsDivider: Bool
+	/// From `RowMetrics`: shorter than `MessageListView.rowHeight` when the preview is short or absent.
+	var height: CGFloat = MessageListView.rowHeight
 
 	@State private var isHovering = false
 
@@ -151,6 +165,7 @@ struct MessageRow: View {
 	}
 
 	private var subject: String { message.subject.trimmingCharacters(in: .whitespaces) }
+	private var preview: String { PreviewText.plain(message.preview) }
 
 	/// "(No Subject)", dimmed and italic, where a subject should be.
 	private var noSubject: some View {
@@ -171,6 +186,9 @@ struct MessageRow: View {
 					if message.hasAttachment { HIcon(.attachment, size: 13).foregroundStyle(.secondary) }
 					if message.flagged { HIcon(.flag, size: 13).foregroundStyle(.orange) }
 				}
+				if let sourceAccount {
+					ProfileAvatar(key: AvatarCache.key(account: sourceAccount), name: store.accountList.first { $0.id == sourceAccount }.map(store.accountName) ?? "?", size: 15)
+				}
 				Text(MailDate.list(message.date))
 					.font(Typography.meta).foregroundStyle(.secondary).lineLimit(1).fixedSize()
 			}
@@ -182,14 +200,14 @@ struct MessageRow: View {
 					if message.flagged { HIcon(.flag, size: 13).foregroundStyle(.orange) }
 				}
 			}
-			if !message.preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-				Text(message.preview).font(Typography.notice).foregroundStyle(.secondary).lineLimit(2)
+			if !preview.isEmpty {
+				Text(preview).font(Typography.notice).foregroundStyle(.secondary).lineLimit(2)
 			}
 		}
 		.padding(.leading, MessageRow.textInset)
 		.padding(.trailing, 16)
 		.padding(.vertical, 9)
-		.frame(maxWidth: .infinity, minHeight: MessageListView.rowHeight, maxHeight: MessageListView.rowHeight, alignment: .topLeading)
+		.frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
 		.background(
 			RoundedRectangle(cornerRadius: 10, style: .continuous)
 				.fill(isSelected ? AppTheme.railSelection : (isHovering ? AppTheme.rowHighlight : .clear))
@@ -207,5 +225,77 @@ struct MessageRow: View {
 		}
 		.contentShape(Rectangle())
 		.onHover { isHovering = $0 }
+	}
+}
+
+/// Row heights, worked out from the messages instead of from laid-out views. A row is sender, subject
+/// and up to two preview lines; a short preview takes one line, none takes none, and a message with
+/// no sender drops the subject line. Line counts are measured once per message and width.
+@MainActor
+final class RowMetrics {
+	private var heights: [CGFloat] = []
+	private var offsets: [CGFloat] = [0]
+	private var lines: [String: (preview: String, count: Int)] = [:]
+	private var width: CGFloat = 0
+
+	private static let noticeFont = NSFont.systemFont(ofSize: Typography.baseSize - 1)
+	private static func lineHeight(_ font: NSFont) -> CGFloat { ceil(font.ascender - font.descender + font.leading) }
+	private static let noticeLine = lineHeight(noticeFont)
+	private static let bodyLine = lineHeight(NSFont.systemFont(ofSize: Typography.baseSize))
+
+	func update(messages: [MessageSummary], width: CGFloat, isDraft: (MessageSummary) -> Bool) {
+		// Preview text spans the row minus its insets.
+		let textWidth = max(width - MessageRow.textInset - 16, 40)
+		if abs(textWidth - self.width) > 0.5 { self.width = textWidth; lines.removeAll(keepingCapacity: true) }
+		heights.removeAll(keepingCapacity: true)
+		offsets.removeAll(keepingCapacity: true)
+		heights.reserveCapacity(messages.count)
+		offsets.reserveCapacity(messages.count + 1)
+		var total: CGFloat = 0
+		offsets.append(0)
+		for message in messages {
+			let h = height(for: message, isDraft: isDraft(message))
+			heights.append(h)
+			total += h
+			offsets.append(total)
+		}
+	}
+
+	func height(at index: Int) -> CGFloat { heights.indices.contains(index) ? heights[index] : MessageListView.rowHeight }
+
+	/// Where row `index` starts (or, past the last row, the end of the list).
+	func offset(of index: Int) -> CGFloat { offsets.isEmpty ? 0 : offsets[min(max(index, 0), offsets.count - 1)] }
+
+	/// The row containing a scroll offset.
+	func row(at y: CGFloat) -> Int {
+		var low = 0, high = max(offsets.count - 2, 0)
+		while low < high {
+			let mid = (low + high + 1) / 2
+			if offsets[mid] <= y { low = mid } else { high = mid - 1 }
+		}
+		return low
+	}
+
+	private func height(for message: MessageSummary, isDraft: Bool) -> CGFloat {
+		let hasSender = !(isDraft ? message.toDisplay : message.senderDisplay).trimmingCharacters(in: .whitespaces).isEmpty
+		let previewLines = previewLineCount(message)
+		// Start from the full row (sender, subject, two preview lines) and take away what is missing.
+		var h = MessageListView.rowHeight
+		if !(hasSender || isDraft) { h -= 2 + Self.bodyLine }
+		h -= CGFloat(2 - previewLines) * Self.noticeLine
+		if previewLines == 0 { h -= 2 }
+		return max(ceil(h), 34)
+	}
+
+	private func previewLineCount(_ message: MessageSummary) -> Int {
+		let text = PreviewText.plain(message.preview)
+		if text.isEmpty { return 0 }
+		if let hit = lines[message.id], hit.preview == text { return hit.count }
+		let box = (text as NSString).boundingRect(
+			with: NSSize(width: width, height: .greatestFiniteMagnitude),
+			options: .usesLineFragmentOrigin, attributes: [.font: Self.noticeFont])
+		let count = box.height > Self.noticeLine * 1.5 ? 2 : 1
+		lines[message.id] = (text, count)
+		return count
 	}
 }

@@ -5,6 +5,8 @@ import SwiftUI
 /// `.subheadline` resolve to three different sizes on macOS. Metadata (dates, badges) is a step down.
 enum Typography {
 	static let baseSize: CGFloat = 14
+	/// Extra space between lines in the assistant chat: a line height of 1.5 times the size.
+	static let chatLineSpacing: CGFloat = baseSize * 0.5 - 3
 	static let body = Font.system(size: baseSize, weight: .regular)
 	static let bodySemibold = Font.system(size: baseSize, weight: .semibold)
 	static let notice = Font.system(size: baseSize - 1, weight: .regular)

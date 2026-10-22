@@ -23,6 +23,8 @@ final class AvatarCache {
 	func load(key: String, account: Account, mailboxID: String?, email: String) {
 		guard requested.insert(key).inserted else { return }
 		let file = directory.appendingPathComponent(key.replacingOccurrences(of: "/", with: "_") + ".img")
+		// A picture chosen on this Mac is never replaced by the server's.
+		if let image = NSImage(contentsOf: localFile(key)) { images[key] = image; return }
 		if let data = try? Data(contentsOf: file), let image = NSImage(data: data) { images[key] = image }
 		Task {
 			guard let result = await Self.fetch(account: account, mailboxID: mailboxID, email: email) else { return }
@@ -36,6 +38,34 @@ final class AvatarCache {
 				images[key] = image
 			}
 		}
+	}
+
+	private func localFile(_ key: String) -> URL {
+		directory.appendingPathComponent(key.replacingOccurrences(of: "/", with: "_") + ".local")
+	}
+
+	func hasLocal(_ key: String) -> Bool { FileManager.default.fileExists(atPath: localFile(key).path) }
+
+	/// Uses a picture chosen on this Mac, shrunk to 256 px.
+	func setLocal(key: String, from source: URL) -> Bool {
+		guard let original = NSImage(contentsOf: source), original.size.width > 0, original.size.height > 0 else { return false }
+		let side: CGFloat = 256, scale = max(side / original.size.width, side / original.size.height)
+		let size = NSSize(width: original.size.width * scale, height: original.size.height * scale)
+		let shrunk = NSImage(size: NSSize(width: side, height: side))
+		shrunk.lockFocus()
+		original.draw(in: NSRect(x: (side - size.width) / 2, y: (side - size.height) / 2, width: size.width, height: size.height))
+		shrunk.unlockFocus()
+		guard let tiff = shrunk.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]),
+			  (try? png.write(to: localFile(key), options: .atomic)) != nil else { return false }
+		images[key] = shrunk
+		return true
+	}
+
+	/// Drops the chosen picture; the server's (or Gravatar's) comes back at the next launch.
+	func removeLocal(key: String) {
+		try? FileManager.default.removeItem(at: localFile(key))
+		images[key] = nil
+		requested.remove(key)
 	}
 
 	func forget(account id: String) {

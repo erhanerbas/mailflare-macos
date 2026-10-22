@@ -7,6 +7,7 @@ struct ComposeView: View {
 	@State var draft: ComposeDraft
 	@State private var error: String?
 	@State private var controller = ComposerController()
+	@Environment(\.colorScheme) private var colorScheme
 	@State private var showQuoted = false
 	@State private var quotedHeight: CGFloat = 0
 	@State private var linkOpen = false
@@ -20,6 +21,11 @@ struct ComposeView: View {
 	/// Fixed when the composer opens: tall, but always shorter than the window it sits in.
 	@State private var height: CGFloat = ComposeView.fittingHeight()
 	@State private var showBcc: Bool
+	@State private var promptOpen = false
+	@State private var prompt = ""
+	@State private var writing = false
+	@State private var writeTask: Task<Void, Never>?
+	@FocusState private var promptFocused: Bool
 
 	/// The draft as the composer opened (a reply arrives with recipients and a subject filled in).
 	private let initial: ComposeDraft
@@ -39,7 +45,7 @@ struct ComposeView: View {
 		_showBcc = State(initialValue: !draft.bcc.isEmpty)
 	}
 
-	private var canSend: Bool { !Addresses.parse(draft.to).isEmpty && !store.identities.isEmpty }
+	private var canSend: Bool { !Addresses.parse(draft.to).isEmpty && !store.identities(for: draft).isEmpty }
 	private static func fittingHeight() -> CGFloat {
 		let window = (NSApp.mainWindow ?? NSApp.keyWindow)?.frame.height ?? 740
 		return min(660, max(460, window - 80))
@@ -58,7 +64,7 @@ struct ComposeView: View {
 			rule
 
 			// Headers, then the body and its tools, flat on the window with hairlines between.
-			if store.identities.count > 1 {
+			if store.identities(for: draft).count > 1 {
 				fromRow
 				rule
 			}
@@ -74,7 +80,8 @@ struct ComposeView: View {
 			}
 			field("Subject", text: $draft.subject)
 			rule
-			formattingBar
+			// Above the editor (a web view), so tooltips and the link popover are not drawn under it.
+			formattingBar.zIndex(3)
 			ComposerEditor(initialHTML: draft.body, controller: controller, onChange: { draft.body = $0 }, onFiles: addFiles)
 				.frame(minHeight: 140, maxHeight: .infinity)
 			if !draft.quotedHTML.isEmpty { quoted }
@@ -88,8 +95,12 @@ struct ComposeView: View {
 					.padding(.horizontal, 16).padding(.bottom, 6)
 			}
 
+			if promptOpen { promptBar.zIndex(4) }
+
+			// Its tooltips and the templates dropdown open upward over everything above.
 			actionBar
 				.padding(.horizontal, 16).padding(.vertical, 12)
+				.zIndex(5)
 		}
 		.frame(width: 680, height: height)
 		.background(AppTheme.background)
@@ -129,6 +140,11 @@ struct ComposeView: View {
 
 	// MARK: Body tools
 
+	/// The quoted original is re-colored for the dark window when it has no dark styles of its own.
+	private var quoteNeedsAdapting: Bool {
+		colorScheme == .dark && !draft.quotedHTML.isEmpty && !MessageAppearance.supportsDark(draft.quotedHTML)
+	}
+
 	private var formattingBar: some View {
 		let f = controller.formats
 		return HStack(spacing: 2) {
@@ -144,8 +160,19 @@ struct ComposeView: View {
 			TitlebarIconButton(icon: .link, help: "Insert link (⌘K)") { openLink() }
 				.popover(isPresented: $linkOpen, arrowEdge: .top) { linkField }
 			TitlebarIconButton(icon: .clearFormat, help: "Clear formatting") { controller.clearFormatting() }
+			divider
+			TitlebarIconButton(icon: .undo, help: "Undo (⌘Z)", isEnabled: controller.canUndo) { controller.undo() }
+			TitlebarIconButton(icon: .redo, help: "Redo (⇧⌘Z)", isEnabled: controller.canRedo) { controller.redo() }
 			Spacer()
-			TitlebarIconButton(icon: .attachment, help: "Attach files (up to 10 MB each)") { attach() }
+			// Same state as the reader's colors button: shown where the quoted mail has no dark styles.
+			if quoteNeedsAdapting {
+				TitlebarIconButton(
+					icon: .colors,
+					help: store.adaptColors ? "Show Original Colors" : "Adapt Colors to Dark Mode",
+					isActive: !store.adaptColors
+				) { store.toggleAdaptColors() }
+			}
+			TitlebarIconButton(icon: .attachment, help: "Attach files (up to 10 MB each)", tooltipTrailing: true) { attach() }
 		}
 		.padding(.horizontal, 12).padding(.vertical, 4)
 	}
@@ -185,12 +212,13 @@ struct ComposeView: View {
 				}
 				.foregroundStyle(.secondary)
 				.padding(.horizontal, 16).padding(.vertical, 6)
+				.frame(maxWidth: .infinity, alignment: .leading)
 				.contentShape(Rectangle())
 			}
 			.buttonStyle(.plain)
 			if showQuoted {
 				ScrollView {
-					MessageWebView(html: draft.quotedHTML, mode: .asIs, contentHeight: $quotedHeight)
+					MessageWebView(html: draft.quotedHTML, mode: quoteNeedsAdapting ? (store.adaptColors ? .adapted : .original) : .asIs, contentHeight: $quotedHeight)
 						.frame(height: max(quotedHeight, 40))
 				}
 				.frame(height: min(max(quotedHeight, 40), 200))
@@ -221,10 +249,70 @@ struct ComposeView: View {
 
 	private var actionBar: some View {
 		HStack(spacing: 8) {
-			Button("Discard") { store.compose = nil }.buttonStyle(.pill)
+			Button("Discard") { writeTask?.cancel(); store.compose = nil }.buttonStyle(.pill)
+			TitlebarIconButton(
+				icon: .sparkles,
+				help: aiReady ? "AI Writer" : "Set AI Provider to enable AI Writer",
+				isActive: promptOpen,
+				isDimmed: !aiReady,
+				tooltipAbove: true
+			) { if aiReady { togglePrompt() } }
 			Spacer()
 			Button("Save Draft") { run(send: false) }.buttonStyle(.pill)
 			sendButton
+		}
+	}
+
+	// MARK: AI Writer
+
+	private var aiReady: Bool { store.ai.writerClient != nil }
+
+	private func togglePrompt() {
+		withAnimation(.snappy(duration: 0.2)) { promptOpen.toggle() }
+		if promptOpen { promptFocused = true } else { writeTask?.cancel(); controller.focus() }
+	}
+
+	/// The prompt field, right above the footer buttons: Enter or the arrow writes into the body.
+	private var promptBar: some View {
+		HStack(spacing: 8) {
+			HIcon(.sparkles, size: 14).foregroundStyle(.secondary)
+			TextField(draft.body.isEmpty ? "Describe the message to write…" : "Tell AI how to change this message…", text: $prompt)
+				.textFieldStyle(.plain).font(Typography.body)
+				.focused($promptFocused)
+				.disabled(writing)
+				.onSubmit(writeWithAI)
+				.onExitCommand { togglePrompt() }
+			if writing {
+				ProgressView().controlSize(.small)
+				TitlebarIconButton(icon: .close, help: "Stop") { writeTask?.cancel() }
+			} else {
+				TitlebarIconButton(icon: .send, help: "Write (↩)", isEnabled: !prompt.trimmingCharacters(in: .whitespaces).isEmpty) { writeWithAI() }
+			}
+		}
+		.padding(.horizontal, 12).padding(.vertical, 6)
+		.background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(AppTheme.railSelection.opacity(0.7)))
+		.padding(.horizontal, 16).padding(.top, 4)
+		.transition(.opacity)
+	}
+
+	private func writeWithAI() {
+		let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !writing, !text.isEmpty, let client = store.ai.writerClient else { return }
+		error = nil
+		writing = true
+		let snapshot = draft
+		let instructions = store.ai.writerInstructions
+		writeTask = Task {
+			defer { writing = false }
+			do {
+				let html = try await AIWriter.write(client: client, prompt: text, draft: snapshot, instructions: instructions)
+				guard !Task.isCancelled else { return }
+				controller.replaceAll(html: html)
+				prompt = ""
+			} catch is CancellationError {
+			} catch {
+				self.error = describe(error)
+			}
 		}
 	}
 
@@ -296,7 +384,7 @@ struct ComposeView: View {
 	// MARK: From
 
 	private var fromLabel: String {
-		let identity = store.identities.first { $0.id == draft.identityID } ?? store.identities.first
+		let identity = store.identities(for: draft).first { $0.id == draft.identityID } ?? store.identities(for: draft).first
 		return identity.map { $0.name.isEmpty ? $0.email : "\($0.name) <\($0.email)>" } ?? ""
 	}
 
@@ -311,10 +399,10 @@ struct ComposeView: View {
 			.overlay(alignment: .topLeading) {
 				if fromOpen {
 					DropdownCard(width: nil, anchor: .topLeading) {
-						ForEach(store.identities) { identity in
+						ForEach(store.identities(for: draft)) { identity in
 							DropdownRow(
 								label: identity.name.isEmpty ? identity.email : "\(identity.name) <\(identity.email)>",
-								isSelected: identity.id == (draft.identityID ?? store.identities.first?.id)
+								isSelected: identity.id == (draft.identityID ?? store.identities(for: draft).first?.id)
 							) {
 								draft.identityID = identity.id
 								withAnimation(.snappy(duration: 0.2)) { fromOpen = false }
@@ -327,7 +415,7 @@ struct ComposeView: View {
 			.clickAway(isActive: fromOpen) { withAnimation(.snappy(duration: 0.2)) { fromOpen = false } }
 		}
 		.padding(.horizontal, 16).padding(.vertical, 5)
-		.zIndex(fromOpen ? 1 : 0)
+		.zIndex(fromOpen ? 10 : 0)
 	}
 
 	private func apply(_ template: ComposeTemplates.Template) {

@@ -20,8 +20,8 @@ private struct MessageDetail: View {
 	let message: MessageSummary
 	@Environment(\.colorScheme) private var colorScheme
 	@State private var showDetails = false
-	/// Whether this sender's mail is re-colored for the dark window; see `MessageAppearance`.
-	@State private var adapts: Bool
+	/// Whether this sender's mail is re-colored for the dark window; the toolbar's colors button sets it.
+	private var adapts: Bool { store.adaptColors }
 	/// The Settings default; changing it re-derives `adapts` for the open message.
 	@AppStorage(MessageAppearance.adaptKey) private var adaptByDefault = true
 
@@ -34,7 +34,6 @@ private struct MessageDetail: View {
 
 	init(message: MessageSummary) {
 		self.message = message
-		_adapts = State(initialValue: MessageAppearance.adapts(sender: message.fromEmail))
 	}
 
 	/// The dark-only toggle shows when the body has no dark styles of its own to defer to.
@@ -92,7 +91,7 @@ private struct MessageDetail: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 		}
 		.background(AppTheme.background)
-		.onChange(of: adaptByDefault) { _, _ in adapts = MessageAppearance.adapts(sender: message.fromEmail) }
+		.onChange(of: adaptByDefault) { _, _ in store.refreshAdaptColors() }
 	}
 
 	/// Stands in for the message while its body loads: four lines of text.
@@ -132,16 +131,6 @@ private struct MessageDetail: View {
 					}
 					if message.hasAttachment { HIcon(.attachment, size: 13).foregroundStyle(.secondary) }
 					if message.flagged { HIcon(.flag, size: 13).foregroundStyle(.orange) }
-					if let html = store.detail?.html, needsAdapting(html) {
-						Button {
-							adapts.toggle()
-							MessageAppearance.setAdapts(adapts, sender: message.fromEmail)
-						} label: {
-							HIcon(.appearance, size: 13).foregroundStyle(adapts ? Color.secondary : Color.accentColor)
-						}
-						.buttonStyle(.light)
-						.help(adapts ? "Show Original Colors" : "Adapt Colors to Dark Mode")
-					}
 					Text(MailDate.full(message.date))
 						.font(Typography.meta).foregroundStyle(.secondary).lineLimit(1).fixedSize()
 				}

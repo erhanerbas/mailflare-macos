@@ -89,14 +89,17 @@ struct SidebarView: View {
 
 	/// The account/inbox in view: pictures, name and address, with a chevron that opens the switcher.
 	private var headerButton: some View {
-		let inbox = store.currentInbox ?? (multipleInboxes ? nil : store.inboxAddresses.first)
-		let title = inbox.map { store.label($0) }
+		let activeView = store.activeView
+		let inbox = activeView != nil ? nil : (store.currentInbox ?? (multipleInboxes ? nil : store.inboxAddresses.first))
+		let title = activeView?.name ?? inbox.map { store.label($0) }
 			?? (multipleInboxes ? "All Inboxes" : (store.account.map(store.accountName) ?? "Mailflare"))
 		return Button {
 			withAnimation(.snappy(duration: 0.22)) { switcherOpen.toggle() }
 		} label: {
 			HStack(spacing: 10) {
-				if let inbox, let account = store.account {
+				if let activeView {
+					accountStack(activeView.accountIDs, size: 28, step: 15)
+				} else if let inbox, let account = store.account {
 					ProfileAvatar(key: AvatarCache.key(account: account.id, mailbox: inbox.id), name: store.label(inbox), size: 34)
 				} else if !multipleInboxes, let account = store.account {
 					// A single-inbox account (Gmail and the like): the account itself.
@@ -106,7 +109,7 @@ struct SidebarView: View {
 				}
 				VStack(alignment: .leading, spacing: 1) {
 					Text(title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-					Text(inbox?.inboxEmail ?? (multipleInboxes ? addressSummary : (store.account?.email ?? "")))
+					Text(activeView.map(viewSummary) ?? inbox?.inboxEmail ?? (multipleInboxes ? addressSummary : (store.account?.email ?? "")))
 						.font(Typography.meta).foregroundStyle(.secondary).lineLimit(1)
 				}
 				Spacer(minLength: 0)
@@ -151,6 +154,27 @@ struct SidebarView: View {
 		return emails.count > 1 ? "\(first) +\(emails.count - 1) more" : first
 	}
 
+	/// Up to three account pictures, overlapped.
+	private func accountStack(_ ids: [String], size: CGFloat, step: CGFloat) -> some View {
+		let shown = Array(ids.prefix(3))
+		return ZStack(alignment: .leading) {
+			ForEach(Array(shown.enumerated()), id: \.element) { index, id in
+				let account = store.accountList.first { $0.id == id }
+				ProfileAvatar(key: AvatarCache.key(account: id), name: account.map(store.accountName) ?? "?", size: size)
+					.overlay(Circle().stroke(AppTheme.elevated, lineWidth: 2))
+					.offset(x: CGFloat(index) * step)
+					.zIndex(Double(shown.count - index))
+			}
+		}
+		.frame(width: size + step * CGFloat(max(shown.count - 1, 0)), height: size + 6, alignment: .leading)
+	}
+
+	/// "2 inboxes · 2 accounts" under a view's name.
+	private func viewSummary(_ view: InboxView) -> String {
+		let inboxes = view.members.count, accounts = view.accountIDs.count
+		return "\(inboxes) inbox\(inboxes == 1 ? "" : "es") · \(accounts) account\(accounts == 1 ? "" : "s")"
+	}
+
 	/// Up to three pictures, overlapped.
 	private func avatarStack(_ inboxes: [Mailbox], accountID: String, size: CGFloat, step: CGFloat) -> some View {
 		let shown = Array(inboxes.prefix(3))
@@ -171,31 +195,47 @@ struct SidebarView: View {
 		let rows = store.accountList.reduce(0) { total, account in
 			let inboxes = store.inboxAddresses(of: account.id).count
 			return total + 1 + (inboxes > 1 ? inboxes : 0)
-		}
+		} + store.inboxViews.count
 		let content = VStack(alignment: .leading, spacing: 2) {
 			ForEach(Array(store.accountList.enumerated()), id: \.element.id) { index, account in
 				if index > 0 { Rectangle().fill(AppTheme.cardStroke).frame(height: 1).padding(.vertical, 6).padding(.horizontal, 6) }
 				accountRows(account)
 			}
+			if !store.inboxViews.isEmpty {
+				Rectangle().fill(AppTheme.cardStroke).frame(height: 1).padding(.vertical, 6).padding(.horizontal, 6)
+				ForEach(store.inboxViews) { view in viewRow(view) }
+			}
 		}
 		.padding(.vertical, 6)
-		let natural = CGFloat(rows) * 48 + CGFloat(max(store.accountList.count - 1, 0)) * 14 + 12
+		let natural = CGFloat(rows) * 48 + CGFloat(max(store.accountList.count - 1, 0)) * 14 + 12 + (store.inboxViews.isEmpty ? 0 : 14)
 		return VStack(spacing: 0) {
 			Group {
 				if natural > 280 { ScrollView { content }.frame(height: 280) } else { content }
 			}
 			Rectangle().fill(AppTheme.cardStroke).frame(height: 1).padding(.horizontal, 10)
 			VStack(alignment: .leading, spacing: 2) {
-				actionRow(.add, "Add Account") { closeSwitcher(); store.showAddAccount = true }
-				actionRow(.settings, "Settings") { closeSwitcher(); store.settingsPage = .general }
-				actionRow(.signOut, "Sign Out") { closeSwitcher(); store.signOut() }
-					.help("Sign out \(store.account?.email ?? "")")
+				actionRow(.allInboxes, "New Inbox View") { closeSwitcher(); store.inboxViewEditor = InboxView() }
+				actionRow(.settings, "Manage Account") { closeSwitcher(); store.settingsPage = .accounts }
 			}
 			.padding(.vertical, 6)
 		}
 	}
 
-	private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () -> Void) -> some View {
+	private func viewRow(_ view: InboxView) -> some View {
+	ViewRow(
+		isSelected: store.activeViewID == view.id,
+		unread: store.unreadCount(of: view),
+		action: { store.selectView(view.id); closeSwitcher() },
+		edit: { closeSwitcher(); store.inboxViewEditor = view }
+	) {
+		accountStack(view.accountIDs, size: 24, step: 13)
+	} text: {
+		Text(view.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+		Text(viewSummary(view)).font(Typography.meta).foregroundStyle(.secondary).lineLimit(1)
+	}
+}
+
+private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () -> Void) -> some View {
 		SwitcherRow(isSelected: false, unread: 0, action: action) {
 			HIcon(icon, size: 16).foregroundStyle(.secondary).frame(width: 26)
 		} text: {
@@ -209,7 +249,7 @@ struct SidebarView: View {
 		let isCurrent = account.id == store.account?.id
 		let showInboxes = inboxes.count > 1
 		SwitcherRow(
-			isSelected: isCurrent && (store.currentInbox == nil || !showInboxes),
+			isSelected: store.activeViewID == nil && isCurrent && (store.currentInbox == nil || !showInboxes),
 			unread: store.unreadCount(accountID: account.id, inbox: nil),
 			action: { store.selectInbox(nil, accountID: account.id); closeSwitcher() }
 		) {
@@ -226,7 +266,7 @@ struct SidebarView: View {
 		if showInboxes {
 			ForEach(inboxes) { inbox in
 				SwitcherRow(
-					isSelected: isCurrent && store.currentInbox?.id == inbox.id,
+					isSelected: store.activeViewID == nil && isCurrent && store.currentInbox?.id == inbox.id,
 					unread: store.unreadCount(accountID: account.id, inbox: inbox),
 					indent: true,
 					action: { store.selectInbox(inbox, accountID: account.id); closeSwitcher() }
@@ -268,8 +308,20 @@ struct SidebarView: View {
 				.buttonStyle(.plain)
 				.padding(.bottom, 4)
 			}
+			Button { store.settingsPage = store.settingsPage ?? .general } label: {
+				HStack(spacing: 8) {
+					HIcon(.settings, size: 15)
+					Text("Settings").font(Typography.body)
+					Spacer(minLength: 0)
+				}
+				.foregroundStyle(store.settingsPage == nil ? Color.secondary : Color.primary)
+				.padding(.vertical, 6)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.help("Settings (⌘,)")
 			HStack(spacing: 6) {
-				Text("\(store.brandName) v\(MailStore.appVersion)").font(Typography.meta.weight(.medium)).foregroundStyle(.tertiary).lineLimit(1)
+				Text("\(store.displayBrandName) v\(MailStore.appVersion)").font(Typography.meta.weight(.medium)).foregroundStyle(.tertiary).lineLimit(1)
 				Spacer(minLength: 0)
 				if store.license.isPro {
 					Text("PRO")
@@ -385,7 +437,12 @@ struct SidebarView: View {
 		case "trash": return (all ? "All Trash" : "Trash", .trash, nil)
 		case "archive": return (all ? "All Archive" : "Archive", .archive, nil)
 		default:
-			if case .mailbox(let id) = item, let box = store.mailbox(id) { return (box.name, icon(for: box), nil) }
+			if case .mailbox(let id) = item, let box = store.mailbox(id) {
+				// In a view with several accounts, say whose folder it is.
+				let owner = ViewMessageID.split(id).account.flatMap { a in store.accountList.first { $0.id == a } }
+				let multi = (store.activeView?.accountIDs.count ?? 0) > 1
+				return (multi ? owner.map { "\(box.name) — \(store.accountName($0))" } ?? box.name : box.name, icon(for: box), nil)
+			}
 			return (key, .folder, nil)
 		}
 	}
@@ -471,6 +528,52 @@ private struct SwitcherRow<Leading: View, Text_: View>: View {
 		.padding(.horizontal, 4)
 		.onHover { isHovering = $0 }
 	}
+}
+
+/// A saved inbox view in the switcher. Hovering it shows an edit button where the unread count sits.
+private struct ViewRow<Leading: View, Text_: View>: View {
+var isSelected: Bool
+var unread: Int
+var action: () -> Void
+var edit: () -> Void
+@ViewBuilder var leading: Leading
+@ViewBuilder var text: Text_
+
+@State private var isHovering = false
+
+var body: some View {
+	Button(action: action) {
+		HStack(spacing: 10) {
+			leading
+			VStack(alignment: .leading, spacing: 1) { text }
+			Spacer(minLength: 4)
+			if !isHovering {
+				if unread > 0 { SwiftUI.Text(unread > 999 ? "999+" : "\(unread)").font(Typography.meta).foregroundStyle(.secondary) }
+				if isSelected { HIcon(.check, size: 14) }
+			}
+		}
+		.padding(.leading, 10).padding(.trailing, 10).padding(.vertical, 6)
+		.background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+			.fill(isSelected ? AppTheme.railSelection : (isHovering ? AppTheme.rowHighlight : .clear)))
+		.contentShape(Rectangle())
+	}
+	.buttonStyle(.plain)
+	.overlay(alignment: .trailing) {
+		if isHovering {
+			Button(action: edit) {
+				HIcon(.edit, size: 14)
+					.foregroundStyle(.secondary)
+					.frame(width: 26, height: 26)
+					.contentShape(Rectangle())
+			}
+			.buttonStyle(.light)
+			.help("Edit inbox view")
+			.padding(.trailing, 8)
+		}
+	}
+	.padding(.horizontal, 4)
+	.onHover { isHovering = $0 }
+}
 }
 
 /// A round profile picture, or the initials on a blue circle when there is none.

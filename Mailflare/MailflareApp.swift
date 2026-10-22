@@ -21,7 +21,7 @@ struct MailflareApp: App {
 				.task { await store.restore() }
 				.task { await store.license.revalidate() }
 				.task { await updater.checkPeriodically() }
-				.frame(minWidth: 980, minHeight: 560)
+				.frame(minWidth: 540, minHeight: 560)
 		}
 		// The window draws its own titlebar band; the content runs to the top of the window.
 		.windowStyle(.hiddenTitleBar)

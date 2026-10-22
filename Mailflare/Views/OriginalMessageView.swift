@@ -19,13 +19,17 @@ struct OriginalMessageView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			HStack {
+			HStack(spacing: 2) {
 				VStack(alignment: .leading, spacing: 2) {
 					Text("Original Message").font(Typography.bodySemibold)
 					Text("Message details and full source, including headers and MIME body.")
 						.font(Typography.meta).foregroundStyle(.secondary)
 				}
 				Spacer()
+				if case .loaded(let source, let path, _) = phase {
+					TitlebarIconButton(icon: .download, help: "Download Original") { download(path) }
+					TitlebarIconButton(icon: copied ? .check : .copy, help: copied ? "Copied" : "Copy to Clipboard") { copy(source) }
+				}
 				TitlebarIconButton(icon: .cancel, help: "Close") { dismiss() }
 			}
 			.padding(.horizontal, 12).padding(.leading, 4).padding(.vertical, 10)
@@ -41,21 +45,12 @@ struct OriginalMessageView: View {
 			case .failed(let reason):
 				Text(reason).font(Typography.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
 					.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
-			case .loaded(let source, let path, let summary):
-				VStack(spacing: 14) {
-					details(summary)
-					HStack {
-						Button { download(path) } label: { HStack(spacing: 5) { HIcon(.attachment, size: 13); Text("Download Original") } }
-							.buttonStyle(.pill)
-						Spacer()
-						Button { copy(source) } label: { HStack(spacing: 5) { HIcon(copied ? .check : .drafts, size: 13); Text(copied ? "Copied" : "Copy to clipboard") } }
-							.buttonStyle(.pillProminent)
-					}
-					SourceTextView(text: source)
-						.background(AppTheme.composerContextFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-						.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+			case .loaded(let source, _, let summary):
+				// The details and the source are one table, scrolling together.
+				ScrollView {
+					details(summary, source: source)
+						.padding(16)
 				}
-				.padding(16)
 			}
 		}
 		.frame(width: 760, height: height)
@@ -64,7 +59,7 @@ struct OriginalMessageView: View {
 	}
 
 	/// The headline rows, one bordered group with a rule between rows.
-	private func details(_ s: MessageSourceSummary) -> some View {
+	private func details(_ s: MessageSourceSummary, source: String) -> some View {
 		VStack(spacing: 0) {
 			row("Message ID", s.messageID, tint: s.messageID != nil ? .green : nil)
 			rule
@@ -81,6 +76,12 @@ struct OriginalMessageView: View {
 			authRow("DKIM", s.dkim)
 			rule
 			authRow("DMARC", s.dmarc)
+			rule
+			VStack(alignment: .leading, spacing: 6) {
+				Text("Content").font(Typography.notice.weight(.medium))
+				SourceTextView(text: source)
+			}
+			.padding(.vertical, 8)
 		}
 		.padding(.horizontal, 14)
 		.background(AppTheme.composerContextFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -149,31 +150,36 @@ struct OriginalMessageView: View {
 	}
 }
 
-/// The raw source: monospaced, selectable, scrolling both ways and never wrapped, so long header
-/// lines stay as they are. A text view rather than `Text`, which would struggle with a large message.
+/// The raw source: monospaced, selectable and wrapped, sized to its full height so the page around
+/// it does the scrolling. A text view rather than `Text`, which would struggle with a large message.
 private struct SourceTextView: NSViewRepresentable {
 	let text: String
 
-	func makeNSView(context: Context) -> NSScrollView {
-		let scroll = NSTextView.scrollableTextView()
-		scroll.drawsBackground = false
-		scroll.hasHorizontalScroller = true
-		guard let view = scroll.documentView as? NSTextView else { return scroll }
+	func makeNSView(context: Context) -> NSTextView {
+		let view = NSTextView()
 		view.isEditable = false
 		view.isSelectable = true
 		view.drawsBackground = false
 		view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
 		view.textColor = .labelColor
-		view.textContainerInset = NSSize(width: 10, height: 10)
-		view.isHorizontallyResizable = true
-		view.textContainer?.widthTracksTextView = false
-		view.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+		view.textContainerInset = .zero
+		view.textContainer?.lineFragmentPadding = 0
+		view.textContainer?.widthTracksTextView = true
+		view.isVerticallyResizable = false
+		view.isHorizontallyResizable = false
 		view.string = text
-		return scroll
+		return view
 	}
 
-	func updateNSView(_ scroll: NSScrollView, context: Context) {
-		guard let view = scroll.documentView as? NSTextView, view.string != text else { return }
-		view.string = text
+	func updateNSView(_ view: NSTextView, context: Context) {
+		if view.string != text { view.string = text }
+	}
+
+	func sizeThatFits(_ proposal: ProposedViewSize, nsView view: NSTextView, context: Context) -> CGSize? {
+		let width = proposal.width ?? 600
+		guard let container = view.textContainer, let layout = view.layoutManager else { return nil }
+		container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+		layout.ensureLayout(for: container)
+		return CGSize(width: width, height: ceil(layout.usedRect(for: container).height))
 	}
 }

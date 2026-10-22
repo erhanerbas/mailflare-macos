@@ -262,6 +262,11 @@ struct TitlebarIconButton: View {
 	var tint: Color?
 	var isActive = false
 	var isEnabled = true
+	/// Looks disabled but keeps its tooltip, to say why the button does nothing.
+	var isDimmed = false
+	/// For buttons at the window's right edge: the tooltip ends at the button instead of centring on it.
+	var tooltipTrailing = false
+	var tooltipAbove = false
 	var action: () -> Void
 
 	@State private var isHovering = false
@@ -275,10 +280,10 @@ struct TitlebarIconButton: View {
 		}
 		.buttonStyle(.plain)
 		.disabled(!isEnabled)
-		.opacity(isEnabled ? 1 : 0.35)
-		.foregroundStyle(tint ?? (isActive || isHovering ? Color.primary : Color.secondary))
+		.opacity(isEnabled && !isDimmed ? 1 : 0.35)
+		.foregroundStyle(tint ?? ((isActive || isHovering) && !isDimmed ? Color.primary : Color.secondary))
 		.onHover { isHovering = $0 && isEnabled }
-		.titlebarTooltip(help, isHovering: isHovering)
+		.titlebarTooltip(help, isHovering: isHovering, trailing: tooltipTrailing, above: tooltipAbove)
 		.accessibilityLabel(help)
 	}
 }
@@ -324,11 +329,14 @@ struct TitlebarMenu<Content: View>: View {
 struct TitlebarTooltip: ViewModifier {
 	var text: String
 	var isHovering: Bool
+	var trailing = false
+	/// Opens above the control and starts at its leading edge, to stay inside a panel's bottom-left corner.
+	var above = false
 	@State private var isShown = false
 
 	func body(content: Content) -> some View {
 		content
-			.overlay(alignment: .top) {
+			.overlay(alignment: above ? .topLeading : trailing ? .topTrailing : .top) {
 				if isShown {
 					Text(text)
 						.font(.system(size: 11))
@@ -339,12 +347,12 @@ struct TitlebarTooltip: ViewModifier {
 						.background(AppTheme.elevated, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
 						.overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(AppTheme.cardStroke, lineWidth: 1))
 						.shadow(color: AppTheme.composerShadow, radius: 4, y: 2)
-						.offset(y: TitlebarIconButton.size + 6)
+						.offset(y: above ? -(TitlebarIconButton.size + 2) : TitlebarIconButton.size + 6)
 						.allowsHitTesting(false)
 						.transition(.opacity)
 				}
 			}
-			.zIndex(isShown ? 1 : 0)
+			.zIndex(isShown ? 1000 : 0)
 			.task(id: isHovering) {
 				guard isHovering else { isShown = false; return }
 				try? await Task.sleep(for: .milliseconds(500))
@@ -354,8 +362,8 @@ struct TitlebarTooltip: ViewModifier {
 }
 
 extension View {
-	func titlebarTooltip(_ text: String, isHovering: Bool) -> some View {
-		modifier(TitlebarTooltip(text: text, isHovering: isHovering))
+	func titlebarTooltip(_ text: String, isHovering: Bool, trailing: Bool = false, above: Bool = false) -> some View {
+		modifier(TitlebarTooltip(text: text, isHovering: isHovering, trailing: trailing, above: above))
 	}
 }
 
@@ -508,6 +516,66 @@ struct DropdownLabel: View {
 	var body: some View {
 		Text(title).font(Typography.meta.weight(.medium)).foregroundStyle(.secondary)
 			.padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 2)
+	}
+}
+
+/// A search field at the top of a long dropdown, focused when it opens. Typing finds the first
+/// matching row (the caller scrolls to it); Return chooses it.
+struct DropdownSearchField: View {
+	@Binding var text: String
+	var onSubmit: () -> Void
+	@FocusState private var focused: Bool
+
+	var body: some View {
+		HStack(spacing: 6) {
+			HIcon(.search, size: 13).foregroundStyle(.secondary)
+			TextField("Type to search", text: $text)
+				.textFieldStyle(.plain).font(Typography.body)
+				.focused($focused)
+				.onSubmit(onSubmit)
+		}
+		.padding(.horizontal, 8).padding(.vertical, 6)
+		.background(AppTheme.composerContextFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+		.padding(.horizontal, 2).padding(.bottom, 2)
+		.onAppear { focused = true }
+	}
+}
+
+/// A dropdown's scrolling list. It is as tall as its rows, up to `maxHeight` (measured, so a list
+/// that fills in later still gets the right height), and scrolls to `target` when that changes.
+struct DropdownScroll<Content: View>: View {
+	var maxHeight: CGFloat = 280
+	var target: String?
+	@ViewBuilder var content: Content
+	@State private var contentHeight: CGFloat = 0
+
+	var body: some View {
+		ScrollViewReader { proxy in
+			ScrollView {
+				// Lazy: only the rows near the viewport exist, so a catalogue of hundreds opens at once.
+				LazyVStack(alignment: .leading, spacing: 2) { content }
+					.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+			}
+			.frame(height: min(max(contentHeight, 1), maxHeight))
+			.onAppear { if let target { proxy.scrollTo(target, anchor: .center) } }
+			.onChange(of: target) { _, new in if let new { proxy.scrollTo(new, anchor: .top) } }
+		}
+	}
+}
+
+extension View {
+	/// The row a search matched, tinted so it stands out in the list.
+	func searchMatch(_ isMatch: Bool) -> some View {
+		background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(isMatch ? AppTheme.rowHighlight : .clear).padding(.horizontal, 4))
+	}
+}
+
+/// What a searched dropdown shows when nothing matches.
+struct DropdownNoResults: View {
+	var body: some View {
+		Text("No item found").font(Typography.body).italic().foregroundStyle(.tertiary)
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.padding(.horizontal, 10).padding(.vertical, 8)
 	}
 }
 

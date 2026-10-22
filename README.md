@@ -21,7 +21,7 @@ Mailflare for macOS is the desktop companion to [Mailflare](https://github.com/h
 - **Notifications and Dock badge.** New-mail alerts with optional previews and sounds, and an unread count on the Dock icon.
 - **Native feel.** Light and dark mode, a hidden title bar, a collapsible sidebar and keyboard shortcuts.
 - **Updates.** Checks GitHub releases and updates itself in place.
-- **Mailflare Pro.** See [Licensing](#licensing).
+- **AI assistant.** A chat panel (sparkles button in the title bar) that can search and read your mail, draft replies and organize messages with tools. See [AI assistant](#ai-assistant).
 
 ### Keyboard shortcuts
 
@@ -36,14 +36,16 @@ Mailflare for macOS is the desktop companion to [Mailflare](https://github.com/h
 | `⌘↩` | Send |
 | `⎋` | Back to inbox (from Settings) |
 
-## Licensing
+## AI assistant
 
-Mailflare Pro is activated in either of two ways:
+The assistant appears once an AI provider is set up in **Settings → AI Providers**. It never sends mail: when a draft is ready it opens in the composer for you to review and send.
 
-1. **Automatically.** Sign in with a Mailflare account whose server has an active Pro or Team license. The app asks each saved account's server (`/api/branding`), and one licensed account is enough to activate the app, whichever account is in view. Signing out of that account removes the activation.
-2. **With a license key.** Open **Settings → License** (the **Upgrade to Pro** button above the version line opens it) and enter a Mailflare Pro key. The app activates it with [Paymug](https://app.paymug.co) for this Mac, stores the key in the Keychain, and re-validates it about twice a day. If Paymug is unreachable, an activated key keeps working for 14 days.
+- **Providers.** Add as many as you like: OpenAI, Anthropic, OpenRouter, Groq, a local Ollama model, or any OpenAI-compatible address. Keys are stored in the Keychain, one per provider. "Load Models" fetches a provider's model list, and long lists load lazily and can be searched by typing.
+- **Chat panel.** Pick the provider and model from the dropdown at the top right of the panel. A new chat offers starter prompts (about the open email when one is open) and your recent conversations, which are saved per account on this Mac. On a narrow window the sidebar closes while the panel is open and returns when it closes.
+- **Tools.** `get_current_email`, `list_emails`, `get_email`, `get_thread`, `search_emails`, `draft_email`, `draft_reply`, `edit_draft`, `review_draft_send`, `discard_draft`, `mark_email_read`, `move_email` and `move_emails`, all on the account in view.
+- **Writing preferences.** Add your tone or sign-off in the AI Providers page and the assistant follows it when drafting.
 
-An activated app shows a **PRO** badge at the bottom of the sidebar. **Deactivate This Mac** frees the seat so the key can be used on another device. Keys are bought at <https://app.paymug.co/buy/mailflare-pro>.
+The mail the assistant reads is sent to the provider you choose. Pick a local Ollama model to keep it on your Mac.
 
 ## Requirements
 
@@ -79,17 +81,18 @@ You can also open `Mailflare.xcodeproj` in Xcode and run the **Mailflare** schem
 | Path | Contents |
 | --- | --- |
 | `Mailflare/MailflareApp.swift` | App entry, window and menu commands |
-| `Mailflare/Store/` | `MailStore` (app state over the core), `LicenseManager`, `AppUpdater`, `MailNotifier`, avatars, compose templates |
+| `Mailflare/Store/` | `MailStore` (app state over the core), `AppUpdater`, `MailNotifier`, avatars, compose templates |
 | `Mailflare/Views/` | Sidebar, message list, reader, composer, settings and sign-in |
 | `Mailflare/Models/` | Mail models and the provider presets |
 | `Mailflare/Support/` | Keychain store, settings, icons, appearance |
+| `Mailflare/AI/` | Provider settings, streaming client, mail tools and the chat model |
 | `Mailflare/Theme/` | Colors and typography |
 
 ## Data and privacy
 
 - Account secrets (device keys and app passwords) are kept in the macOS Keychain, never in the mail database.
 - Mail is cached locally; **Settings → About** shows where.
-- The app talks only to your mail servers, GitHub (update checks) and Paymug (license checks).
+- The app talks only to your mail servers, GitHub (update checks) and, when you use the assistant, the AI provider you set up.
 
 ## Related projects
 

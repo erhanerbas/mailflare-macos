@@ -3,7 +3,7 @@ import ServiceManagement
 
 /// The pages of the Settings view, listed in the sidebar in this order.
 enum SettingsPage: String, CaseIterable, Identifiable {
-	case general, notifications, accounts, license, about
+	case general, accounts, ai, notifications, license, support, about
 
 	var id: String { rawValue }
 
@@ -12,7 +12,9 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 		case .general: "General"
 		case .notifications: "Notifications"
 		case .accounts: "Accounts"
+		case .ai: "AI Providers"
 		case .license: "License"
+		case .support: "Support"
 		case .about: "About"
 		}
 	}
@@ -22,7 +24,9 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 		case .general: .settings
 		case .notifications: .bell
 		case .accounts: .allInboxes
+		case .ai: .sparkles
 		case .license: .vip
+		case .support: .support
 		case .about: .info
 		}
 	}

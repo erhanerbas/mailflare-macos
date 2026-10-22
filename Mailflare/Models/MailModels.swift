@@ -80,6 +80,8 @@ struct ComposeDraft: Identifiable {
 	var references: [String] = []
 	var attachments: [OutgoingAttachment] = []
 	var replacesDraftID: String?
+	/// The account the message is written in; nil is the account in view.
+	var accountID: String?
 }
 
 extension OutgoingAttachment: Identifiable {
