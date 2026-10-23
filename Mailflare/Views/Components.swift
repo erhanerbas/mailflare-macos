@@ -454,10 +454,11 @@ struct DropdownCard<Content: View>: View {
 	/// A fixed width, or nil to take the width of the view it opens from.
 	var width: CGFloat? = 200
 	var anchor: UnitPoint = .topTrailing
+	var spacing: CGFloat = 2
 	@ViewBuilder var content: Content
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 2) { content }
+		VStack(alignment: .leading, spacing: spacing) { content }
 			.padding(4)
 			.frame(minWidth: width, maxWidth: width ?? .infinity)
 			.background(AppTheme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -478,6 +479,9 @@ struct DropdownRow: View {
 	var trailing: AppIcon?
 	var isEnabled = true
 	var onDelete: (() -> Void)?
+	/// Replaces the label's font where a menu wants it smaller.
+	var labelFont: Font?
+	var verticalPadding: CGFloat = 7
 	var action: () -> Void
 
 	@State private var isHovering = false
@@ -487,13 +491,13 @@ struct DropdownRow: View {
 			Button(action: action) {
 				HStack(spacing: 8) {
 					if let icon { HIcon(icon, size: 14).foregroundStyle(.secondary).rotationEffect(.degrees(iconRotation)) }
-					Text(label).font(Typography.body).lineLimit(1)
+					Text(label).font(labelFont ?? Typography.body).lineLimit(1)
 					Spacer(minLength: 8)
 					if let detail { Text(detail).font(Typography.meta).foregroundStyle(.secondary).lineLimit(1) }
 					if isSelected { HIcon(.check, size: 14) }
 					if let trailing { HIcon(trailing, size: 12).foregroundStyle(.secondary) }
 				}
-				.padding(.horizontal, 10).padding(.vertical, 7)
+				.padding(.horizontal, 10).padding(.vertical, verticalPadding)
 				.background(RoundedRectangle(cornerRadius: 9, style: .continuous)
 					.fill(isSelected ? AppTheme.railSelection : (isHovering && isEnabled ? AppTheme.rowHighlight : .clear)))
 				.contentShape(Rectangle())

@@ -773,7 +773,7 @@ private struct AISettingsPage: View {
 
 	var body: some View {
 		if ai.isConfigured { modelsGroup }
-		if ai.providers.isEmpty && editing == nil {
+		if ai.providers.isEmpty {
 			SettingsGroup(title: "AI Providers", footer: "Add a provider to turn on the assistant. The assistant sends the mail it reads to the provider you choose.") {
 				SettingsRow {
 					Text("No providers yet").font(Typography.body).foregroundStyle(.secondary)
@@ -800,15 +800,14 @@ private struct AISettingsPage: View {
 				}
 			}
 		}
-		if editing != nil {
-			ProviderEditor(config: Binding(get: { editing ?? AIProviderConfig(preset: .openai) }, set: { editing = $0 }),
-						   key: $keyText, isNew: editingIsNew, cache: $modelCache) {
-				if let config = editing { ai.save(config, key: keyText) }
-				editing = nil
-			} cancel: { editing = nil }
-		} else {
-			WideButton(title: "Add Provider", icon: .add) { edit(AIProviderConfig(preset: .openai), isNew: true) }
-		}
+		WideButton(title: "Add Provider", icon: .add) { edit(AIProviderConfig(preset: .openai), isNew: true) }
+			.sheet(isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+				ProviderEditor(config: Binding(get: { editing ?? AIProviderConfig(preset: .openai) }, set: { editing = $0 }),
+							   key: $keyText, isNew: editingIsNew, cache: $modelCache) {
+					if let config = editing { ai.save(config, key: keyText) }
+					editing = nil
+				} cancel: { editing = nil }
+			}
 	}
 
 	private var modelsGroup: some View {
@@ -869,7 +868,33 @@ private struct ProviderEditor: View {
 	}
 
 	var body: some View {
-		SettingsGroup(title: isNew ? "New provider" : "Edit provider") {
+		ModalScaffold(title: isNew ? "New Provider" : "Edit Provider", width: 460) {
+			VStack(alignment: .leading, spacing: 12) {
+				form
+				if let error {
+					Text(error).font(Typography.meta).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+				} else if !config.models.isEmpty {
+					Text("\(config.models.count) models available.").font(Typography.meta).foregroundStyle(.secondary)
+				}
+			}
+			// Room for the dropdowns to open downward inside the sheet.
+			.frame(minHeight: 340, alignment: .top)
+		} footer: {
+			HStack(spacing: 8) {
+				Button { Task { await loadModels() } } label: {
+					if loading { ProgressView().controlSize(.small) } else { Text("Load Models") }
+				}
+				.buttonStyle(.pill)
+				.disabled(loading || config.baseURL == nil || (config.preset.needsKey && key.trimmingCharacters(in: .whitespaces).isEmpty))
+				Spacer()
+				Button("Cancel", action: cancel).buttonStyle(.pill).keyboardShortcut(.cancelAction)
+				Button("Save", action: save).buttonStyle(.pillProminent).disabled(!canSave)
+			}
+		}
+	}
+
+	private var form: some View {
+		SettingsGroup(title: "Provider") {
 			SettingsPicker(
 				title: "Service",
 				options: AIProviderPreset.allCases.map { ($0.title, $0) },
@@ -888,6 +913,15 @@ private struct ProviderEditor: View {
 					Text("Base URL").font(Typography.body)
 					Spacer(minLength: 12)
 					TextField("https://api.example.com/v1", text: $config.customBaseURL)
+						.textFieldStyle(.plain).multilineTextAlignment(.trailing).font(Typography.body)
+				}
+			}
+			if config.preset == .cloudflare {
+				SettingsDivider()
+				SettingsRow {
+					Text("Account ID").font(Typography.body)
+					Spacer(minLength: 12)
+					TextField("Cloudflare account ID", text: Binding(get: { config.cloudflareAccountID ?? "" }, set: { config.cloudflareAccountID = $0 }))
 						.textFieldStyle(.plain).multilineTextAlignment(.trailing).font(Typography.body)
 				}
 			}
@@ -916,21 +950,6 @@ private struct ProviderEditor: View {
 					maxHeight: 180, fallbackLabel: config.model
 				)
 			}
-		}
-		if let error {
-			Text(error).font(Typography.meta).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-		} else if !config.models.isEmpty {
-			Text("\(config.models.count) models available.").font(Typography.meta).foregroundStyle(.secondary)
-		}
-		HStack(spacing: 8) {
-			Button { Task { await loadModels() } } label: {
-				if loading { ProgressView().controlSize(.small) } else { Text("Load Models") }
-			}
-			.buttonStyle(.pill)
-			.disabled(loading || config.baseURL == nil || (config.preset.needsKey && key.trimmingCharacters(in: .whitespaces).isEmpty))
-			Spacer()
-			Button("Cancel", action: cancel).buttonStyle(.pill)
-			Button("Save", action: save).buttonStyle(.pillProminent).disabled(!canSave)
 		}
 	}
 

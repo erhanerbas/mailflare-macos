@@ -1471,6 +1471,36 @@ final class MailStore {
 		}
 	}
 
+	/// AI summaries by listed-message id, loaded from the core's database or just made.
+	var summaries: [String: String] = [:]
+	/// The message being summarized, and why the last attempt failed.
+	var summarizingID: String?
+	var summaryError: String?
+
+	func loadSavedSummary(for id: String) {
+		summaryError = nil
+		let (acct, raw) = owner(of: id)
+		if let saved = (try? core?.aiSummary(accountId: acct, messageId: raw)) ?? nil { summaries[id] = saved }
+	}
+
+	/// Summarizes the open message with the AI provider and saves the result with the message.
+	func summarizeSelected() {
+		guard summarizingID == nil, let detail, let id = selectedID, detail.summary.id == id, let client = ai.client else { return }
+		summarizingID = id
+		summaryError = nil
+		let subject = detail.summary.subject, from = detail.summary.sender.formatted
+		let text = PreviewText.plain(detail.html)
+		let (acct, raw) = owner(of: id)
+		Task { [weak self] in
+			do {
+				let result = try await AISummarizer.summarize(client: client, subject: subject, from: from, text: text)
+				try? self?.core?.saveAiSummary(accountId: acct, messageId: raw, text: result)
+				self?.summaries[id] = result
+			} catch { self?.summaryError = error.localizedDescription }
+			self?.summarizingID = nil
+		}
+	}
+
 	/// Marks an opened message read as the Reading setting says: at once, after a delay, or never.
 	private func scheduleMarkRead(_ id: String) {
 		let delay = ReadingSettings.markReadDelay

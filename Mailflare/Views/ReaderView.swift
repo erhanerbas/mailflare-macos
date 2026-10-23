@@ -20,6 +20,8 @@ private struct MessageDetail: View {
 	let message: MessageSummary
 	@Environment(\.colorScheme) private var colorScheme
 	@State private var showDetails = false
+	/// The AI summary saved with this message, kept in the store so the toolbar button can make it.
+	private var summary: String? { store.summaries[message.id] }
 	/// Whether this sender's mail is re-colored for the dark window; the toolbar's colors button sets it.
 	private var adapts: Bool { store.adaptColors }
 	/// The Settings default; changing it re-derives `adapts` for the open message.
@@ -56,6 +58,8 @@ private struct MessageDetail: View {
 			VStack(alignment: .leading, spacing: 0) {
 				VStack(alignment: .leading, spacing: 12) {
 					header
+					if let summary { summaryCard(summary) }
+					if let error = store.summaryError { Text(error).font(Typography.meta).foregroundStyle(.orange) }
 				}
 				.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
 
@@ -91,6 +95,7 @@ private struct MessageDetail: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 		}
 		.background(AppTheme.background)
+		.task { store.loadSavedSummary(for: message.id) }
 		.onChange(of: adaptByDefault) { _, _ in store.refreshAdaptColors() }
 	}
 
@@ -114,6 +119,22 @@ private struct MessageDetail: View {
 		}
 		.noticeSurface(radius: 12)
 		.padding(.horizontal, 20).padding(.vertical, 4)
+	}
+
+	/// The saved AI summary, in a bordered container above the content.
+	private func summaryCard(_ text: String) -> some View {
+		VStack(alignment: .leading, spacing: 6) {
+			HStack(spacing: 6) {
+				HIcon(.aiContent, size: 13)
+				Text("Summarised").font(Typography.meta.weight(.medium))
+			}
+			.foregroundStyle(.secondary)
+			Text(text).font(Typography.body).textSelection(.enabled)
+				.frame(maxWidth: .infinity, alignment: .leading)
+		}
+		.padding(12)
+		.background(AppTheme.composerContextFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+		.overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(AppTheme.outline, lineWidth: 1))
 	}
 
 	/// The sender and recipients, each with their address beside their name.

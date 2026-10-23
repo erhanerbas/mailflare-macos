@@ -5,7 +5,7 @@ import Hugeicons
 enum AppIcon: String {
 	case sidebar, filter, compose, reply, replyAll, forward, archive, trash, junk, folder, flag
 	case moreDown, search, allInboxes, vip, remind, drafts, sent, smartMailbox, inbox
-	case attachment, summarize, chevronRight, chevronDown, clock, close, send, add, addCircle, check, signOut, appearance, settings, info, more, bell
+	case attachment, summarize, aiContent, chevronRight, chevronDown, clock, close, send, add, addCircle, check, signOut, appearance, settings, info, more, bell
 	case crown, arrowLeft, sparkles, edit, colors, download, copy, label, unsubscribe, block, sourceCode, cancel, minimize, bold, italic, underline, strikethrough, bulletList, numberList, quote, link, clearFormat, undo, redo, support, markRead, markUnread, unflag
 	case notificationOff, calendar, cart, money, person, work, travel, home, bookmark, parcel
 
@@ -33,6 +33,7 @@ enum AppIcon: String {
 		case .inbox: Hugeicons.inbox
 		case .attachment: Hugeicons.attachment01
 		case .summarize: Hugeicons.sparkles
+		case .aiContent: Hugeicons.aiContentGenerator01
 		case .chevronRight: Hugeicons.arrowRight01
 		case .chevronDown: Hugeicons.arrowDown01
 		case .clock: Hugeicons.alarmClock

@@ -77,7 +77,6 @@ struct ContentView: View {
 		.overlay(alignment: .topLeading) { if store.settingsPage == nil && !(layout.single && store.selectedID != nil) { titlebarSearch } }
 		.overlay(alignment: .topTrailing) { if store.settingsPage == nil { titlebarTrailing } }
 		.overlay(alignment: .topTrailing) { if store.ai.isConfigured { assistantToggle } }
-		.overlay(alignment: .bottomTrailing) { if store.settingsPage == nil { composeButton } }
 		.animation(.easeInOut(duration: 0.2), value: store.chatOpen)
 		.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
 		.onChange(of: layout.showSidebar) { _, docked in if docked { drawerOpen = false } }
@@ -326,6 +325,13 @@ struct ContentView: View {
 				}
 				if !isDraft {
 					separator
+                    
+                    if store.ai.isConfigured {
+                        TitlebarIconButton(icon: .aiContent, help: store.summarizingID == message.id ? "Summarizing…" : "Summarize with AI",
+                                           isActive: store.summarizingID == message.id) { store.summarizeSelected() }
+                            .disabled(store.detail?.summary.id != message.id || store.summarizingID != nil)
+                    }
+                    
 					// Only where the body has no dark styles of its own to defer to.
 					if colorScheme == .dark, columnScheme == nil, let html = store.detail.flatMap({ $0.summary.id == message.id ? $0.html : nil }),
 					   !MessageAppearance.supportsDark(html) {
@@ -338,15 +344,14 @@ struct ContentView: View {
 					flagMenu(message)
 					moreMenu(message, role: role)
 				}
+                
+                separator
 			}
 		}
 		.padding(.trailing, WindowChromeMetrics.cardInset + 8 + toggleInset)
 		.padding(.top, WindowChromeMetrics.titlebarRowCenter - TitlebarIconButton.size / 2)
 	}
 
-	/// Room the assistant panel takes on the trailing edge, which the floating compose button clears.
-	/// The title bar's icons ignore it: they stay put when the panel opens.
-	private var panelInset: CGFloat { store.chatVisible && layout.chatDocked ? AIChatPanel.width + WindowChromeMetrics.cardInset : 0 }
 	/// The assistant button sits at the far right of the title bar; the message actions end before it.
 	private var toggleInset: CGFloat { store.ai.isConfigured ? TitlebarIconButton.size + 6 : 0 }
 
@@ -357,23 +362,6 @@ struct ContentView: View {
 		}
 		.padding(.trailing, WindowChromeMetrics.cardInset + 8)
 		.padding(.top, WindowChromeMetrics.titlebarRowCenter - TitlebarIconButton.size / 2)
-	}
-
-	/// New Message, as the window's primary action, floating over the reader's bottom-trailing corner.
-	private var composeButton: some View {
-		Button { store.newMessage() } label: {
-			HStack(spacing: 6) {
-				HIcon(.compose, size: 15)
-				Text(store.minimizedDraft == nil ? "Compose" : "Drafting…")
-			}
-			.padding(.horizontal, 4)
-			.padding(.vertical, 3)
-		}
-		.buttonStyle(.pillProminent)
-		.shadow(color: AppTheme.composerShadow, radius: 10, y: 4)
-		.help(store.minimizedDraft == nil ? "New Message (⌘N)" : "Continue your draft (⌘N)")
-		.padding(.trailing, WindowChromeMetrics.cardInset + 20 + panelInset)
-		.padding(.bottom, WindowChromeMetrics.cardInset + 20)
 	}
 
 	private var separator: some View {

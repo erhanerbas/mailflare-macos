@@ -129,7 +129,6 @@ struct SidebarView: View {
 			.background(AppTheme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 			.overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(AppTheme.outline, lineWidth: 1))
 			.padding(.horizontal, Self.gutter)
-			.padding(.bottom, 6)
 	}
 
 	/// The open dropdown: the header card extended with the accounts, inboxes and account actions.
@@ -535,6 +534,7 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 				}
 				.buttonStyle(.plain)
 				.help("Settings (⌘,)")
+				composeButton
 			}
 			HStack(spacing: 6) {
 				Text("\(store.displayBrandName) v\(MailStore.appVersion)").font(Typography.meta.weight(.medium)).foregroundStyle(.tertiary).lineLimit(1)
@@ -551,6 +551,21 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.horizontal, Self.gutter * 2).padding(.top, 8).padding(.bottom, 12)
+	}
+
+	/// New Message, the primary action, below Settings and clear of the footer text.
+	private var composeButton: some View {
+		Button { store.newMessage() } label: {
+			HStack(spacing: 6) {
+				HIcon(.compose, size: 15)
+				Text(store.minimizedDraft == nil ? "Compose" : "Drafting…")
+			}
+			.frame(maxWidth: .infinity)
+			.padding(.vertical, 3)
+		}
+		.buttonStyle(.pillProminent)
+		.help(store.minimizedDraft == nil ? "New Message (⌘N)" : "Continue your draft (⌘N)")
+		.padding(.top, 6).padding(.bottom, 10)
 	}
 
 	/// A newer release and the button that installs it, or how the install is going.

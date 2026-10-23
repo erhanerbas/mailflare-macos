@@ -66,9 +66,11 @@ struct MessageListView: View {
 
 	private final class ScrollPosition { var offset: CGFloat = 0 }
 
-	private static let menuWidth: CGFloat = 210
+	/// One point under the body text.
+	private static let menuFont = Font.system(size: Typography.baseSize - 1)
+	private static let menuWidth: CGFloat = 168
 	/// The menu's size before it is measured. Every menu has the same rows, so one measure serves all.
-	private static let menuHeight: CGFloat = 270
+	private static let menuHeight: CGFloat = 200
 	@State private var menuSize: CGSize?
 
 	/// Only the rows near the viewport exist as views; the rest are replaced by spacers of the same
@@ -196,16 +198,16 @@ struct MessageListView: View {
 			closeMenu()
 			action()
 		}
-		return DropdownCard(width: Self.menuWidth, anchor: anchor) {
-			DropdownRow(label: "Reply", icon: .reply) { choose { store.reply(to: m.id, all: false) } }
-			DropdownRow(label: "Forward", icon: .forward) { choose { store.forward(m.id) } }
+		return DropdownCard(width: Self.menuWidth, anchor: anchor, spacing: 1) {
+			DropdownRow(label: "Reply", icon: .reply, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.reply(to: m.id, all: false) } }
+			DropdownRow(label: "Forward", icon: .forward, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.forward(m.id) } }
 			DropdownDivider()
-			DropdownRow(label: m.flagged ? "Remove Flag" : "Flag", icon: m.flagged ? .unflag : .flag) { choose { store.toggleFlag(m.id) } }
-			DropdownRow(label: m.seen ? "Mark as Unread" : "Mark as Read", icon: m.seen ? .markUnread : .markRead) { choose { store.setRead(m.id, !m.seen) } }
+			DropdownRow(label: m.flagged ? "Remove Flag" : "Flag", icon: m.flagged ? .unflag : .flag, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.toggleFlag(m.id) } }
+			DropdownRow(label: m.seen ? "Mark as Unread" : "Mark as Read", icon: m.seen ? .markUnread : .markRead, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.setRead(m.id, !m.seen) } }
 			DropdownDivider()
-			DropdownRow(label: "Archive", icon: .archive, isEnabled: role != "archive") { choose { store.archive(m.id) } }
-			DropdownRow(label: "Move to Junk", icon: .junk, isEnabled: role != "junk") { choose { store.junk(m.id) } }
-			DropdownRow(label: "Delete", icon: .trash) { choose { store.trash(m.id) } }
+			DropdownRow(label: "Archive", icon: .archive, isEnabled: role != "archive", labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.archive(m.id) } }
+			DropdownRow(label: "Move to Junk", icon: .junk, isEnabled: role != "junk", labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.junk(m.id) } }
+			DropdownRow(label: "Delete", icon: .trash, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.trash(m.id) } }
 		}
 	}
 }

@@ -5,7 +5,7 @@ import Security
 /// The services the assistant can talk to. All of them speak the OpenAI chat-completions protocol
 /// (Anthropic through its compatibility endpoint), so one client serves every preset.
 enum AIProviderPreset: String, CaseIterable, Identifiable, Codable {
-	case openai, anthropic, openrouter, groq, ollama, custom
+	case openai, anthropic, openrouter, groq, deepseek, cloudflare, ollama, custom
 
 	var id: String { rawValue }
 
@@ -15,6 +15,8 @@ enum AIProviderPreset: String, CaseIterable, Identifiable, Codable {
 		case .anthropic: "Anthropic"
 		case .openrouter: "OpenRouter"
 		case .groq: "Groq"
+		case .deepseek: "DeepSeek"
+		case .cloudflare: "Cloudflare Workers AI"
 		case .ollama: "Ollama (local)"
 		case .custom: "Custom (OpenAI-compatible)"
 		}
@@ -26,6 +28,9 @@ enum AIProviderPreset: String, CaseIterable, Identifiable, Codable {
 		case .anthropic: "https://api.anthropic.com/v1"
 		case .openrouter: "https://openrouter.ai/api/v1"
 		case .groq: "https://api.groq.com/openai/v1"
+		case .deepseek: "https://api.deepseek.com/v1"
+		// Needs the account id: see `AIProviderConfig.baseURLString`.
+		case .cloudflare: ""
 		case .ollama: "http://localhost:11434/v1"
 		case .custom: ""
 		}
@@ -37,6 +42,8 @@ enum AIProviderPreset: String, CaseIterable, Identifiable, Codable {
 		case .anthropic: "claude-sonnet-5-5"
 		case .openrouter: "openai/gpt-4.1-mini"
 		case .groq: "llama-3.3-70b-versatile"
+		case .deepseek: "deepseek-chat"
+		case .cloudflare: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 		case .ollama: "llama3.1"
 		case .custom: ""
 		}
@@ -52,6 +59,8 @@ struct AIProviderConfig: Identifiable, Codable, Equatable {
 	var preset: AIProviderPreset
 	var name: String
 	var customBaseURL = ""
+	/// The Cloudflare account that Workers AI requests go through.
+	var cloudflareAccountID: String?
 	var model: String
 	/// Model ids the provider listed the last time "Load Models" ran.
 	var models: [String] = []
@@ -62,7 +71,15 @@ struct AIProviderConfig: Identifiable, Codable, Equatable {
 		model = preset.defaultModel
 	}
 
-	var baseURLString: String { preset == .custom ? customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines) : preset.baseURL }
+	var baseURLString: String {
+		switch preset {
+		case .custom: customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+		case .cloudflare:
+			(cloudflareAccountID ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ""
+				: "https://api.cloudflare.com/client/v4/accounts/\((cloudflareAccountID ?? "").trimmingCharacters(in: .whitespacesAndNewlines))/ai/v1"
+		default: preset.baseURL
+		}
+	}
 
 	var baseURL: URL? {
 		var s = baseURLString
