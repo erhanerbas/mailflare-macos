@@ -93,6 +93,9 @@ final class MailStore {
 	var activeViewID: String?
 	/// The view open in the create/edit popup.
 	var inboxViewEditor: InboxView?
+	/// The folder popup in view: a new folder, or a rename or delete of one.
+	var folderRequest: FolderRequest?
+	@ObservationIgnored private var folderSupportCache: [String: FolderSupport] = [:]
 	var activeView: InboxView? {
 		guard let id = activeViewID else { return nil }
 		return id == Self.allAccountsID ? allAccountsView : inboxViews.first { $0.id == id }
@@ -341,9 +344,166 @@ final class MailStore {
 		activate(try await core.signInImap(email: email.trimmingCharacters(in: .whitespaces), password: password, config: config))
 	}
 
+	/// Browser sign-in (OAuth2 + PKCE). Returns false when the person closed the sign-in window.
+	@discardableResult
+	func signInOAuth(email: String, client: OAuthClient, config: MailServerConfig) async throws -> Bool {
+		guard let core else { throw CoreError.Storage(message: "The mail database is not available.") }
+		let email = email.trimmingCharacters(in: .whitespaces)
+		let authorization = try oauthAuthorization(client: client, email: email)
+		guard let url = URL(string: authorization.url) else { return false }
+		let callback: URL
+		do {
+			callback = try await WebAuthenticator().authenticate(url: url, redirectURI: client.redirectUri)
+		} catch is WebAuthenticator.Cancelled {
+			return false
+		}
+		activate(try await core.signInOauth(
+			email: email, client: client, authorization: authorization, redirectUrl: callback.absoluteString, config: config))
+		return true
+	}
+
 	func completeMFA(email: String, challenge: String, code: String, serverURL: String, deviceName: String) async throws {
 		guard let core else { return }
 		activate(try await core.completeMfa(email: email, challengeToken: challenge, code: code, serverUrl: serverURL, deviceName: deviceName))
+	}
+
+	// MARK: Folders and labels
+
+	struct FolderRequest: Identifiable {
+		enum Kind {
+			case create(parentID: String?)
+			case rename(Mailbox)
+			case delete(Mailbox)
+		}
+		let id = UUID()
+		var accountID: String
+		var kind: Kind
+	}
+
+	/// What the account allows for folders (and whether to call them labels), nil when the core can't say.
+	func folderSupport(accountID: String) -> FolderSupport? {
+		if let cached = folderSupportCache[accountID] { return cached }
+		guard let found = try? core?.folderSupport(accountId: accountID) else { return nil }
+		folderSupportCache[accountID] = found
+		return found
+	}
+
+	func canCreateFolders(accountID: String) -> Bool { folderSupport(accountID: accountID)?.canCreate ?? false }
+
+	// Folder changes show in the sidebar at once and go to the server in the background (the core
+	// waits for the server and a sync before it returns). Until then they are laid over the stored
+	// mailboxes; a failure takes them back out and says why.
+
+	/// Folders being created, by placeholder id, with the account they are in.
+	@ObservationIgnored private var pendingFolders: [String: (account: String, box: Mailbox)] = [:]
+	/// New names of folders being renamed, by `folderKey`.
+	@ObservationIgnored private var pendingRenames: [String: String] = [:]
+	/// Folders being deleted, by `folderKey`.
+	@ObservationIgnored private var pendingDeletes: Set<String> = []
+
+	private static let pendingPrefix = "pending:"
+	private static func folderKey(_ accountID: String, _ id: String) -> String { accountID + "\n" + id }
+	/// A folder shown before the server has it; it can't be renamed or deleted yet.
+	static func isPending(_ box: Mailbox) -> Bool { box.id.hasPrefix(pendingPrefix) }
+
+	/// The stored mailboxes of an account with the folder changes still on their way laid over them.
+	private func overlayingFolderChanges(_ list: [Mailbox], accountID: String) -> [Mailbox] {
+		guard !pendingFolders.isEmpty || !pendingRenames.isEmpty || !pendingDeletes.isEmpty else { return list }
+		var result = list.compactMap { box -> Mailbox? in
+			let key = Self.folderKey(accountID, box.id)
+			if pendingDeletes.contains(key) { return nil }
+			guard let name = pendingRenames[key] else { return box }
+			var renamed = box
+			// Nested folders can be named by their path; only the last part is renamed.
+			var parts = box.name.components(separatedBy: " / ")
+			parts[parts.count - 1] = name
+			renamed.name = parts.joined(separator: " / ")
+			return renamed
+		}
+		for (account, box) in pendingFolders.values where account == accountID {
+			// The sync that ends the create can store the real folder a moment before the call returns.
+			let arrived = result.contains { $0.parentId == box.parentId && $0.name.localizedCaseInsensitiveCompare(box.name) == .orderedSame }
+			if !arrived { result.append(box) }
+		}
+		return result
+	}
+
+	private func folderFailed(_ verb: String, _ name: String, accountID: String, error: Error) {
+		let noun = folderSupport(accountID: accountID)?.noun ?? "folder"
+		banner = "Couldn’t \(verb) the \(noun) “\(name)”: \(describe(error))"
+	}
+
+	func createFolder(accountID: String, parentID: String?, name: String) {
+		guard let core else { return }
+		let name = name.trimmingCharacters(in: .whitespaces)
+		let placeholder = Mailbox(id: Self.pendingPrefix + UUID().uuidString, accountId: accountID, name: name, parentId: parentID,
+								  role: nil, sortOrder: .max, totalEmails: 0, unreadEmails: 0)
+		pendingFolders[placeholder.id] = (accountID, placeholder)
+		folderChanged(accountID: accountID)
+		Task {
+			do {
+				try await core.createFolder(accountId: accountID, parentId: parentID, name: name)
+			} catch {
+				folderFailed("create", name, accountID: accountID, error: error)
+			}
+			pendingFolders[placeholder.id] = nil
+			folderChanged(accountID: accountID)
+			// Opened while it was on its way: open the folder the server made.
+			if isOpen(placeholder) {
+				if let real = mailboxes(of: accountID).first(where: { $0.parentId == parentID && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) {
+					sidebar = .mailbox(activeViewID == nil ? real.id : ViewMessageID.make(account: accountID, message: real.id))
+				} else {
+					focus = nil; sidebar = .allInboxes
+				}
+			}
+		}
+	}
+
+	func renameFolder(accountID: String, mailbox: Mailbox, name: String) {
+		guard let core, !Self.isPending(mailbox) else { return }
+		let name = name.trimmingCharacters(in: .whitespaces)
+		let key = Self.folderKey(accountID, mailbox.id)
+		let before = Set(mailboxes(of: accountID).map(\.id))
+		pendingRenames[key] = name
+		folderChanged(accountID: accountID)
+		Task {
+			var failure: Error?
+			do { try await core.renameFolder(accountId: accountID, mailboxId: mailbox.id, name: name) } catch { failure = error }
+			pendingRenames[key] = nil
+			folderChanged(accountID: accountID)
+			if let failure { folderFailed("rename", mailbox.name, accountID: accountID, error: failure); return }
+			// Over IMAP a folder's id is its path, so a renamed folder is a new id: keep it open.
+			if isOpen(mailbox), let moved = mailboxes(of: accountID).filter({ !before.contains($0.id) && $0.parentId == mailbox.parentId }).first {
+				sidebar = .mailbox(moved.id)
+			}
+		}
+	}
+
+	func deleteFolder(accountID: String, mailbox: Mailbox) {
+		guard let core, !Self.isPending(mailbox) else { return }
+		let key = Self.folderKey(accountID, mailbox.id)
+		pendingDeletes.insert(key)
+		if isOpen(mailbox) { focus = nil; sidebar = .allInboxes; reload() }
+		folderChanged(accountID: accountID)
+		Task {
+			do {
+				try await core.deleteFolder(accountId: accountID, mailboxId: mailbox.id)
+			} catch {
+				folderFailed("delete", mailbox.name, accountID: accountID, error: error)
+			}
+			pendingDeletes.remove(key)
+			folderChanged(accountID: accountID)
+		}
+	}
+
+	private func isOpen(_ mailbox: Mailbox) -> Bool {
+		guard case let .mailbox(id) = sidebar else { return false }
+		return id == mailbox.id || id.hasSuffix(mailbox.id)
+	}
+
+	private func folderChanged(accountID: String) {
+		invalidateCaches()
+		if accountID == account?.id { refreshMailboxes() }
 	}
 
 	private static func normalize(_ server: String) -> String {
@@ -695,9 +855,7 @@ final class MailStore {
 	/// announces nothing twice.
 	private func quickSyncEnded(_ id: String) {
 		quietSyncs.remove(id)
-		invalidateCaches()
-		if id == account?.id { refreshMailboxes(); reload() }
-		checkNewMail(accountID: id)
+		scheduleRefresh(mailboxes: id == account?.id, list: id == account?.id, newMailOf: id)
 	}
 
 	/// Hands an account's inbox, across all of its addresses, to the notifier and refreshes the Dock badge.
@@ -732,20 +890,17 @@ final class MailStore {
 		switch event {
 		case .syncStarted(let id): if id == account?.id, !quietSyncs.contains(id) { isSyncing = true }
 		case .syncFinished(let id, let error):
-			invalidateCaches()
 			quietSyncs.remove(id)
-			if id != account?.id, activeView?.accountIDs.contains(id) == true { reload() }
-			if id == account?.id {
+			let current = id == account?.id
+			// Sent mail may have just arrived, which is where names come from.
+			scheduleRefresh(mailboxes: current, list: current || activeView?.accountIDs.contains(id) == true, names: current, newMailOf: id)
+			if current {
 				isSyncing = false
-				refreshMailboxes(); reload()
-				// Sent mail may have just arrived, which is where names come from.
-				if let a = account { loadNames(for: a) }
 				// Failures are classified where `sync()` throws; a clean finish means we're connected.
 				if error == nil { connectionNote = nil }
 			}
-			checkNewMail(accountID: id)
-		case .mailboxesChanged: invalidateCaches(); refreshMailboxes()
-		case .messagesChanged, .newMail: invalidateCaches(); reload()
+		case .mailboxesChanged: scheduleRefresh(mailboxes: true)
+		case .messagesChanged, .newMail: scheduleRefresh(list: true)
 		case .outboxChanged: checkOutbox()
 		case .messageSent(_, let subject): showToast("Message sent", detail: subject, icon: .check)
 		}
@@ -763,7 +918,7 @@ final class MailStore {
 
 	func refreshMailboxes() {
 		guard let core, account != nil else { return }
-		mailboxes = (try? core.mailboxes(accountId: accountID)) ?? mailboxes
+		mailboxes = (try? core.mailboxes(accountId: accountID)).map { overlayingFolderChanges($0, accountID: accountID) } ?? mailboxes
 		identities = (try? core.identities(accountId: accountID)) ?? identities
 		if let a = account { loadAvatars(for: a) }
 		updateBadge()
@@ -1369,9 +1524,49 @@ final class MailStore {
 
 	private func invalidateCaches() {
 		mailRevision += 1
+		dropCaches()
+	}
+
+	private func dropCaches() {
 		tabCounts.removeAll()
 		listCache.removeAll()
 		mailboxCache.removeAll()
+	}
+
+	private struct PendingRefresh {
+		var mailboxes = false
+		var list = false
+		var names = false
+		/// Accounts whose inbox goes to the notifier, after the mailboxes are read again.
+		var newMail: Set<String> = []
+	}
+	/// What the next coalesced refresh re-reads; nil when none is scheduled.
+	@ObservationIgnored private var pendingRefresh: PendingRefresh?
+
+	/// Core events come in bursts (a sync reports mailboxes, then messages, then its end, for each
+	/// account), and each one used to re-read the store on the main thread and redraw the list and
+	/// sidebar. Caches are dropped at once, so direct reads stay current; the re-reads and the
+	/// sidebar's recount (`mailRevision`) run once for the whole burst.
+	private func scheduleRefresh(mailboxes: Bool = false, list: Bool = false, names: Bool = false, newMailOf account: String? = nil) {
+		dropCaches()
+		let scheduled = pendingRefresh != nil
+		var pending = pendingRefresh ?? PendingRefresh()
+		pending.mailboxes = pending.mailboxes || mailboxes
+		pending.list = pending.list || list
+		pending.names = pending.names || names
+		if let account { pending.newMail.insert(account) }
+		pendingRefresh = pending
+		guard !scheduled else { return }
+		Task { [weak self] in
+			try? await Task.sleep(for: .milliseconds(50))
+			guard let self, let pending = self.pendingRefresh else { return }
+			self.pendingRefresh = nil
+			self.mailRevision += 1
+			if pending.mailboxes { self.refreshMailboxes() }
+			if pending.names, let current = self.account { self.loadNames(for: current) }
+			for id in pending.newMail { self.checkNewMail(accountID: id) }
+			if pending.list { self.reload() }
+		}
 	}
 
 	private func fetch(_ accountID: String, _ folder: Folder, limit: UInt32) throws -> (list: [MessageSummary], count: Int) {
@@ -1388,7 +1583,7 @@ final class MailStore {
 	func mailboxes(of accountID: String) -> [Mailbox] {
 		if accountID == account?.id { return mailboxes }
 		if let cached = mailboxCache[accountID] { return cached }
-		let loaded = (try? core?.mailboxes(accountId: accountID)) ?? []
+		let loaded = overlayingFolderChanges((try? core?.mailboxes(accountId: accountID)) ?? [], accountID: accountID)
 		mailboxCache[accountID] = loaded
 		return loaded
 	}
@@ -1700,21 +1895,33 @@ final class MailStore {
 
 	let templates = ComposeTemplates()
 
-	/// Queues the message in the core's outbox and returns at once; failures surface via the outbox event.
+	/// Closes the composer at once and queues the message in the core's outbox off the main thread
+	/// (queuing copies attachments). Only what can be checked here throws; a failure to queue reopens
+	/// the composer, and a failure to deliver surfaces through the outbox event.
 	func commit(_ draft: ComposeDraft, send: Bool) throws {
 		guard let core else { return }
 		let message = try outgoing(draft)
-		invalidateCaches()
+		if send, message.to.isEmpty { throw CoreError.InvalidInput(message: "Add at least one valid recipient.") }
 		let acct = draft.accountID ?? accountID
-		if send {
-			guard !message.to.isEmpty else { throw CoreError.InvalidInput(message: "Add at least one valid recipient.") }
-			_ = try core.send(accountId: acct, message: message)
-			showToast("Sending…", detail: message.subject, icon: .send, isProgress: true, duration: 8)
-		} else {
-			_ = try core.saveDraft(accountId: acct, message: message)
-			showToast("Draft saved", detail: message.subject, icon: .check)
-		}
 		compose = nil
+		if send {
+			// Stays up until the core reports the message sent, or that it could not be.
+			showToast("Sending…", detail: message.subject, icon: .send, isProgress: true, duration: 60)
+		}
+		Task {
+			do {
+				try await Task.detached(priority: .userInitiated) {
+					_ = send ? try core.send(accountId: acct, message: message) : try core.saveDraft(accountId: acct, message: message)
+				}.value
+				invalidateCaches()
+				if !send { showToast("Draft saved", detail: message.subject, icon: .check) }
+			} catch {
+				toast = nil
+				banner = "“\(message.subject.isEmpty ? "Your message" : message.subject)” could not be \(send ? "sent" : "saved"): \(describe(error))"
+				// Back where it was, unless another message took the composer meanwhile.
+				if compose == nil { compose = draft } else if minimizedDraft == nil { minimizedDraft = draft }
+			}
+		}
 	}
 
 	func showToast(_ title: String, detail: String = "", icon: AppIcon, isProgress: Bool = false, duration: Double = 3) {

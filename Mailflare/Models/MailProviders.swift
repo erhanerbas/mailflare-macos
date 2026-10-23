@@ -58,6 +58,8 @@ struct MailProvider: Identifiable, Hashable {
 	let username: UsernameStyle
 	/// Domains that select this provider automatically.
 	let domains: [String]
+	/// Set when the provider signs in through the browser (OAuth2) instead of a password.
+	var oauth: OAuthProvider? = nil
 
 	var initial: String { String(name.prefix(1)) }
 
@@ -70,14 +72,14 @@ struct MailProvider: Identifiable, Hashable {
 
 	static func imap(
 		_ id: String, _ name: String, color: UInt32, imap: String, smtp: String, smtpPort: Int = 465,
-		domains: [String], username: UsernameStyle = .email
+		domains: [String], username: UsernameStyle = .email, oauth: OAuthProvider? = nil
 	) -> MailProvider {
 		MailProvider(
 			id: id, name: name, color: color,
 			kind: .imap(
 				incoming: ServerEndpoint(host: imap, port: 993, security: .tls),
 				outgoing: ServerEndpoint(host: smtp, port: smtpPort, security: smtpPort == 587 ? .startTLS : .tls)),
-			username: username, domains: domains)
+			username: username, domains: domains, oauth: oauth)
 	}
 }
 
@@ -89,7 +91,7 @@ enum MailProviders {
 	static let common: [MailProvider] = [
 		.imap("gmail", "Gmail", color: 0xEA4335, imap: "imap.gmail.com", smtp: "smtp.gmail.com", domains: ["gmail.com", "googlemail.com"]),
 		.imap("outlook", "Outlook", color: 0x0078D4, imap: "outlook.office365.com", smtp: "smtp-mail.outlook.com", smtpPort: 587,
-			domains: ["outlook.com", "hotmail.com", "live.com", "msn.com"]),
+			domains: ["outlook.com", "hotmail.com", "live.com", "msn.com"], oauth: .microsoft),
 		.imap("icloud", "iCloud Mail", color: 0x3693F3, imap: "imap.mail.me.com", smtp: "smtp.mail.me.com", smtpPort: 587,
 			domains: ["icloud.com", "me.com", "mac.com"]),
 		.imap("yahoo", "Yahoo Mail", color: 0x6001D2, imap: "imap.mail.yahoo.com", smtp: "smtp.mail.yahoo.com",

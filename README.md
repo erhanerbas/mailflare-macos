@@ -56,6 +56,10 @@ macOS 15.3 or later.
 
 Install Xcode 16 or later, open `Mailflare.xcodeproj` and run the **Mailflare** scheme. Clone [`mailflare-core`](../mailflare-core) next to this project first.
 
+## Outlook sign-in (OAuth)
+
+Outlook and Microsoft 365 sign in through the system browser (authorization code + PKCE), because Outlook.com no longer accepts passwords over IMAP. Register an app in Microsoft Entra with platform "Mobile and desktop applications", redirect `msauth.xyz.hieunguyen.Mailflare://auth`, supported accounts "personal and organizational", and delegated permissions `IMAP.AccessAsUser.All`, `SMTP.Send` and `offline_access`. Then set the build setting `MAILFLARE_OAUTH_MICROSOFT_CLIENT_ID` to its application (client) id. `MAILFLARE_OAUTH_MICROSOFT_REDIRECT_SCHEME` is optional and defaults to `msauth.<bundle id>`. Debug builds also read both from the environment. Without a client id, Outlook shows the password form. Microsoft 365 tenants may need admin consent and SMTP AUTH enabled for the mailbox.
+
 ## Privacy
 
 - Passwords and keys stay in the macOS Keychain.

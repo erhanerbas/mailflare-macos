@@ -10,8 +10,8 @@ struct SignInView: View {
 	@AppStorage("lastEmail") private var email = ""
 	@State private var provider = MailProviders.mailflare
 	@State private var providerPicked = false
+	@State private var providerOpen = false
 	@State private var password = ""
-	@State private var showSettings = false
 	@State private var customProtocol: MailProtocol = .jmap
 	@State private var incoming = ServerEndpoint(host: "", port: 993, security: .tls)
 	@State private var outgoing = ServerEndpoint(host: "", port: 465, security: .tls)
@@ -27,24 +27,23 @@ struct SignInView: View {
 		ViewThatFits(in: .vertical) {
 			VStack(spacing: 0) {
 				form
-				bottomBar(nil)
+				Spacer(minLength: 0)
+				bottomBar
 			}
-			ScrollViewReader { proxy in
-				ScrollView { form }
-					.safeAreaInset(edge: .bottom, spacing: 0) {
-						bottomBar(proxy).background(alignment: .top) { ModalFade().frame(height: 24).offset(y: -24) }
-					}
-			}
+			ScrollView { form }
+				.safeAreaInset(edge: .bottom, spacing: 0) {
+					bottomBar.background(alignment: .top) { ModalFade().frame(height: 24).offset(y: -24) }
+				}
 		}
 		.frame(width: 420)
-		.frame(maxHeight: min(680, ModalMetrics.maxHeight))
+		// Tall enough that the provider dropdown opens in full.
+		.frame(minHeight: min(500, min(680, ModalMetrics.maxHeight)), maxHeight: min(680, ModalMetrics.maxHeight))
 		.background(AppTheme.background)
 		.overlay(alignment: .topTrailing) {
 			if isPopup {
-				Button("Cancel") { store.showAddAccount = false }
-					.buttonStyle(.light).font(Typography.notice).foregroundStyle(.secondary)
+				TitlebarIconButton(icon: .close, help: "Close") { store.showAddAccount = false }
 					.keyboardShortcut(.cancelAction)
-					.padding(16)
+					.padding(14)
 			}
 		}
 		.onAppear {
@@ -67,7 +66,6 @@ struct SignInView: View {
 				accountFields
 				hint
 				if case .custom = provider.kind { customFields }
-				if showsSettingsToggle && showSettings { providerSettings.id("settings") }
 			}
 			if let message = error ?? store.banner {
 				Text(message).font(Typography.notice).foregroundStyle(.red)
@@ -101,20 +99,17 @@ struct SignInView: View {
 		}
 	}
 
-	/// The provider picker at the top: Mailflare, the common providers, or another server.
+	/// The provider picker at the top: Mailflare, the common providers, or another server. A dropdown
+	/// card like the ones in the toolbar, opening below the button.
 	private var providerMenu: some View {
-		Menu {
-			choice(MailProviders.mailflare)
-			Divider()
-			ForEach(MailProviders.common) { choice($0) }
-			Divider()
-			choice(MailProviders.custom)
+		Button {
+			withAnimation(.snappy(duration: 0.2)) { providerOpen.toggle() }
 		} label: {
 			HStack(spacing: 10) {
 				ProviderBadge(provider: provider, size: 26)
 				Text(provider.name).font(Typography.body)
 				Spacer(minLength: 0)
-				HIcon(.chevronDown, size: 13).foregroundStyle(.secondary)
+				HIcon(.chevronDown, size: 13).foregroundStyle(.secondary).rotationEffect(.degrees(providerOpen ? 180 : 0))
 			}
 			.padding(.horizontal, 12)
 			.frame(height: 44)
@@ -123,16 +118,24 @@ struct SignInView: View {
 			.overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(AppTheme.composerStroke, lineWidth: 1))
 			.contentShape(Rectangle())
 		}
-		.menuStyle(.button)
 		.buttonStyle(.plain)
-		.menuIndicator(.hidden)
-	}
-
-	@ViewBuilder
-	private func choice(_ item: MailProvider) -> some View {
-		Button { select(item, picked: true) } label: {
-			if item == provider { Label(item.name, systemImage: "checkmark") } else { Text(item.name) }
+		.overlay(alignment: .topLeading) {
+			if providerOpen {
+				DropdownCard(width: nil, anchor: .topLeading) {
+					DropdownScroll(maxHeight: 290) {
+						ForEach([MailProviders.mailflare] + MailProviders.common + [MailProviders.custom]) { item in
+							DropdownRow(label: item.name, isSelected: item == provider) {
+								select(item, picked: true)
+								withAnimation(.snappy(duration: 0.2)) { providerOpen = false }
+							}
+						}
+					}
+				}
+				.offset(y: 50)
+			}
 		}
+		.clickAway(isActive: providerOpen) { withAnimation(.snappy(duration: 0.2)) { providerOpen = false } }
+		.zIndex(providerOpen ? 10 : 0)
 	}
 
 	private var accountFields: some View {
@@ -145,8 +148,10 @@ struct SignInView: View {
 			labeled("Email") {
 				TextField("you@example.com", text: $email).textFieldStyle(.card).textContentType(.username).autocorrectionDisabled()
 			}
-			labeled("Password") {
-				CardSecureField(title: usesIMAP ? "App password" : "Password or app password", text: $password)
+			if !usesOAuth {
+				labeled("Password") {
+					CardSecureField(title: usesIMAP ? "App password" : "Password or app password", text: $password)
+				}
 			}
 		}
 		.onSubmit(submit)
@@ -154,7 +159,10 @@ struct SignInView: View {
 
 	@ViewBuilder
 	private var hint: some View {
-		if usesIMAP {
+		if usesOAuth {
+			Text("You'll sign in on \(provider.name)'s own page. Mailflare never sees your password.")
+				.font(Typography.meta).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+		} else if usesIMAP {
 			Text("Gmail, iCloud, Yahoo and most other providers need an app password here, not your account password.")
 				.font(Typography.meta).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 		}
@@ -176,22 +184,6 @@ struct SignInView: View {
 			} else {
 				endpointCard("Incoming (IMAP)", endpoint: $incoming, showsUsername: true)
 				endpointCard("Outgoing (SMTP)", endpoint: $outgoing, showsUsername: false)
-			}
-		}
-	}
-
-	/// A known provider's servers, filled in already and open to review.
-	private var providerSettings: some View {
-		VStack(alignment: .leading, spacing: 14) {
-			endpointCard("Incoming (IMAP)", endpoint: $incoming, showsUsername: true)
-			endpointCard("Outgoing (SMTP)", endpoint: $outgoing, showsUsername: false)
-			if case let .imap(defaultIncoming, defaultOutgoing) = provider.kind {
-				Button("Restore \(provider.name) defaults") {
-					incoming = defaultIncoming
-					outgoing = defaultOutgoing
-					username = ""
-				}
-				.buttonStyle(.light).font(Typography.notice).foregroundStyle(Color.accentColor)
 			}
 		}
 	}
@@ -257,26 +249,10 @@ struct SignInView: View {
 		}
 	}
 
-	/// The details button sits right above Sign In; the fields it opens appear in the form above.
-	private func bottomBar(_ proxy: ScrollViewProxy?) -> some View {
+	private var bottomBar: some View {
 		VStack(spacing: 10) {
-			if showsSettingsToggle && challenge == nil {
-				Button {
-					withAnimation(.snappy(duration: 0.2)) { showSettings.toggle() }
-					if showSettings, let proxy { DispatchQueue.main.async { withAnimation { proxy.scrollTo("settings", anchor: .top) } } }
-				} label: {
-					HStack(spacing: 6) {
-						Text("Server settings").font(Typography.notice.weight(.medium))
-						HIcon(.chevronRight, size: 10).rotationEffect(.degrees(showSettings ? 90 : 0))
-						Spacer(minLength: 0)
-					}
-					.foregroundStyle(Color.accentColor)
-					.contentShape(Rectangle())
-				}
-				.buttonStyle(.plain)
-			}
 			Button(action: submit) {
-				Text(busy ? (challenge == nil ? "Signing in…" : "Verifying…") : (challenge == nil ? "Sign In" : "Verify"))
+				Text(busy ? (challenge == nil ? "Signing in…" : "Verifying…") : (challenge == nil ? (usesOAuth ? "Continue with \(provider.name)" : "Sign In") : "Verify"))
 					.font(.system(size: 14, weight: .semibold))
 					.frame(maxWidth: .infinity)
 					.padding(.vertical, 7)
@@ -301,9 +277,10 @@ struct SignInView: View {
 		}
 	}
 
-	private var showsSettingsToggle: Bool {
-		if case .imap = provider.kind { return true }
-		return false
+	/// This build has a client id for the provider, so the browser sign-in replaces the password.
+	private var usesOAuth: Bool {
+		guard let oauth = provider.oauth else { return false }
+		return OAuthConfig.isAvailable(oauth)
 	}
 
 	private var canSubmit: Bool {
@@ -311,7 +288,7 @@ struct SignInView: View {
 		let blank = { (s: String) in s.trimmingCharacters(in: .whitespaces).isEmpty }
 		let needsHosts = usesIMAP && (blank(incoming.host) || blank(outgoing.host))
 		let needsServer = provider.kind == .custom && customProtocol == .jmap && blank(server)
-		return !needsHosts && !needsServer && !blank(email) && !password.isEmpty
+		return !needsHosts && !needsServer && !blank(email) && (usesOAuth || !password.isEmpty)
 	}
 
 	private var mailServerConfig: MailServerConfig {
@@ -333,7 +310,6 @@ struct SignInView: View {
 		providerPicked = providerPicked || picked
 		error = nil
 		username = ""
-		showSettings = false
 		switch new.kind {
 		case let .imap(defaultIncoming, defaultOutgoing):
 			incoming = defaultIncoming
@@ -355,6 +331,8 @@ struct SignInView: View {
 			do {
 				if let challenge {
 					try await store.completeMFA(email: email, challenge: challenge.token, code: code, serverURL: challenge.serverURL, deviceName: device)
+				} else if usesOAuth, let oauth = provider.oauth, let client = OAuthConfig.client(for: oauth) {
+					try await store.signInOAuth(email: email, client: client, config: mailServerConfig)
 				} else if usesIMAP {
 					try await store.signInIMAP(email: email, password: passwordToSend, config: mailServerConfig)
 					password = ""

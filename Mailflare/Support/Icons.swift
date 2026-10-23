@@ -1,7 +1,8 @@
 import SwiftUI
-import Hugeicons
 
-/// Every glyph in the app comes from Hugeicons; this maps UI roles to icon assets.
+/// Every glyph in the app comes from Hugeicons (free set, MIT), vendored as template PDFs in
+/// `Assets.xcassets/Icons` so the app ships only the icons it uses rather than the whole library.
+/// To add one, copy its `.imageset` from the free set into that folder and map it here.
 enum AppIcon: String {
 	case sidebar, filter, compose, reply, replyAll, forward, archive, trash, junk, folder, flag
 	case moreDown, search, allInboxes, vip, remind, drafts, sent, smartMailbox, inbox
@@ -9,83 +10,86 @@ enum AppIcon: String {
 	case crown, arrowLeft, sparkles, edit, colors, download, copy, label, unsubscribe, block, sourceCode, cancel, minimize, bold, italic, underline, strikethrough, bulletList, numberList, quote, link, clearFormat, undo, redo, support, markRead, markUnread, unflag
 	case notificationOff, calendar, cart, money, person, work, travel, home, bookmark, parcel
 
-	var asset: HugeiconsAsset {
+	/// The image in `Assets.xcassets/Icons`.
+	var assetName: String { "Icons/" + fileName }
+
+	private var fileName: String {
 		switch self {
-		case .sidebar: Hugeicons.sidebarLeft
-		case .filter: Hugeicons.filterMail
-		case .compose: Hugeicons.edit02
-		case .reply: Hugeicons.linkBackward
-		case .replyAll: Hugeicons.mailReplyAll01
-		case .forward: Hugeicons.linkForward
-		case .archive: Hugeicons.archive02
-		case .trash: Hugeicons.delete02
-		case .junk: Hugeicons.spam
-		case .folder: Hugeicons.folder01
-		case .flag: Hugeicons.flag01
-		case .moreDown: Hugeicons.arrowDown01
-		case .search: Hugeicons.search01
-		case .allInboxes: Hugeicons.mailbox01
-		case .vip: Hugeicons.star
-		case .remind: Hugeicons.clock01
-		case .drafts: Hugeicons.file02
-		case .sent: Hugeicons.sent
-		case .smartMailbox: Hugeicons.haze
-		case .inbox: Hugeicons.inbox
-		case .attachment: Hugeicons.attachment01
-		case .summarize: Hugeicons.sparkles
-		case .aiContent: Hugeicons.aiContentGenerator01
-		case .chevronRight: Hugeicons.arrowRight01
-		case .chevronDown: Hugeicons.arrowDown01
-		case .clock: Hugeicons.alarmClock
-		case .close: Hugeicons.cancel01
-		case .send: Hugeicons.mailSend01
-		case .add: Hugeicons.add01
-		case .addCircle: Hugeicons.addCircle
-		case .check: Hugeicons.tick02
-		case .signOut: Hugeicons.logout01
-		case .appearance: Hugeicons.sun03
-		case .settings: Hugeicons.settings02
-		case .info: Hugeicons.informationCircle
-		case .more: Hugeicons.moreHorizontal
-		case .bell: Hugeicons.notification01
-		case .label: Hugeicons.tag01
-		case .unsubscribe: Hugeicons.mailRemove01
-		case .block: Hugeicons.userBlock01
-		case .sourceCode: Hugeicons.sourceCode
-		case .cancel: Hugeicons.cancel01
-		case .minimize: Hugeicons.minusSign
-		case .bold: Hugeicons.textBold
-		case .italic: Hugeicons.textItalic
-		case .underline: Hugeicons.textUnderline
-		case .strikethrough: Hugeicons.textStrikethrough
-		case .bulletList: Hugeicons.leftToRightListBullet
-		case .numberList: Hugeicons.leftToRightListNumber
-		case .arrowLeft: Hugeicons.arrowLeft02
-		case .edit: Hugeicons.edit02
-		case .download: Hugeicons.download01
-		case .copy: Hugeicons.copy01
-		case .colors: Hugeicons.colors
-		case .sparkles: Hugeicons.sparkles
-		case .crown: Hugeicons.crown
-		case .quote: Hugeicons.quoteDown
-		case .link: Hugeicons.link01
-		case .clearFormat: Hugeicons.textClear
-		case .undo: Hugeicons.undo03
-		case .redo: Hugeicons.redo03
-		case .support: Hugeicons.customerSupport
-		case .markRead: Hugeicons.mailOpen01
-		case .markUnread: Hugeicons.mail01
-		case .unflag: Hugeicons.flag02
-		case .notificationOff: Hugeicons.notificationBlock01
-		case .calendar: Hugeicons.calendar01
-		case .cart: Hugeicons.shoppingCart01
-		case .money: Hugeicons.dollarCircle
-		case .person: Hugeicons.user
-		case .work: Hugeicons.briefcase01
-		case .travel: Hugeicons.airplane01
-		case .home: Hugeicons.home01
-		case .bookmark: Hugeicons.bookmark01
-		case .parcel: Hugeicons.package
+		case .sidebar: "sidebar-left"
+		case .filter: "filter-mail"
+		case .compose: "edit02"
+		case .reply: "link-backward"
+		case .replyAll: "mail-reply-all01"
+		case .forward: "link-forward"
+		case .archive: "archive02"
+		case .trash: "delete02"
+		case .junk: "spam"
+		case .folder: "folder01"
+		case .flag: "flag01"
+		case .moreDown: "arrow-down01"
+		case .search: "search01"
+		case .allInboxes: "mailbox01"
+		case .vip: "star"
+		case .remind: "clock01"
+		case .drafts: "file02"
+		case .sent: "sent"
+		case .smartMailbox: "haze"
+		case .inbox: "inbox"
+		case .attachment: "attachment01"
+		case .summarize: "sparkles"
+		case .aiContent: "ai-content-generator01"
+		case .chevronRight: "arrow-right01"
+		case .chevronDown: "arrow-down01"
+		case .clock: "alarm-clock"
+		case .close: "cancel01"
+		case .send: "mail-send01"
+		case .add: "add01"
+		case .addCircle: "add-circle"
+		case .check: "tick02"
+		case .signOut: "logout01"
+		case .appearance: "sun03"
+		case .settings: "settings02"
+		case .info: "information-circle"
+		case .more: "more-horizontal"
+		case .bell: "notification01"
+		case .label: "tag01"
+		case .unsubscribe: "mail-remove01"
+		case .block: "user-block01"
+		case .sourceCode: "source-code"
+		case .cancel: "cancel01"
+		case .minimize: "minus-sign"
+		case .bold: "text-bold"
+		case .italic: "text-italic"
+		case .underline: "text-underline"
+		case .strikethrough: "text-strikethrough"
+		case .bulletList: "left-to-right-list-bullet"
+		case .numberList: "left-to-right-list-number"
+		case .arrowLeft: "arrow-left02"
+		case .edit: "edit02"
+		case .download: "download01"
+		case .copy: "copy01"
+		case .colors: "colors"
+		case .sparkles: "sparkles"
+		case .crown: "crown"
+		case .quote: "quote-down"
+		case .link: "link01"
+		case .clearFormat: "text-clear"
+		case .undo: "undo03"
+		case .redo: "redo03"
+		case .support: "customer-support"
+		case .markRead: "mail-open01"
+		case .markUnread: "mail01"
+		case .unflag: "flag02"
+		case .notificationOff: "notification-block01"
+		case .calendar: "calendar01"
+		case .cart: "shopping-cart01"
+		case .money: "dollar-circle"
+		case .person: "user"
+		case .work: "briefcase01"
+		case .travel: "airplane01"
+		case .home: "home01"
+		case .bookmark: "bookmark01"
+		case .parcel: "package"
 		}
 	}
 }
@@ -100,7 +104,7 @@ struct HIcon: View {
 	}
 
 	var body: some View {
-		icon.asset.image()
+		Image(icon.assetName)
 			.resizable()
 			.renderingMode(.template)
 			.scaledToFit()

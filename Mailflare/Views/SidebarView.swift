@@ -383,6 +383,18 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 		) {
 			if let group { store.openGroupItem(item, in: group) } else { store.openTopItem(item) }
 		}
+		// Shown before the server has made it.
+		.opacity(MailStore.isPending(box) ? 0.5 : 1)
+		.contextMenu {
+			if !MailStore.isPending(box), let account = group?.account ?? store.account, let support = store.folderSupport(accountID: account.id) {
+				if support.canRename {
+					Button("Rename \(support.noun.capitalized)…") { store.folderRequest = .init(accountID: account.id, kind: .rename(box)) }
+				}
+				if support.canDelete {
+					Button("Delete \(support.noun.capitalized)…", role: .destructive) { store.folderRequest = .init(accountID: account.id, kind: .delete(box)) }
+				}
+			}
+		}
 	}
 
 	/// One inbox in view: its own section with the views Organize has off, then its folders or labels.
@@ -395,10 +407,15 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 			heading(id, store.scopeTitle)
 			if !collapsed(id) { offRows(group: nil) }
 		}
-		if !folders.isEmpty {
+		let canCreate = store.account.map { store.canCreateFolders(accountID: $0.id) } ?? false
+		if !folders.isEmpty || canCreate {
 			let subID = "open:inbox-folders"
 			let open = store.collapsedSections.contains(subID)
-			foldHeading(store.isGmail ? "Labels" : "Folders", isOpen: open) { store.toggleSection(subID) }
+			let noun = store.isGmail ? "Label" : "Folder"
+			foldHeading(noun + "s", isOpen: open, onAdd: canCreate ? {
+				guard let account = store.account else { return }
+				store.folderRequest = .init(accountID: account.id, kind: .create(parentID: (store.scopeInbox ?? store.inboxAddresses.first)?.id))
+			} : nil) { store.toggleSection(subID) }
 			if open { ForEach(folders) { box in folderRow(box, group: nil) } }
 		}
 	}
@@ -425,10 +442,14 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 				VStack(alignment: .leading, spacing: 2) {
 					offRows(group: group)
 					let folders = store.customFolders(of: group.account.id, inbox: group.inbox)
-					if !folders.isEmpty {
+					let canCreate = store.canCreateFolders(accountID: group.account.id)
+					if !folders.isEmpty || canCreate {
 						let subID = "open:" + id + "-folders"
 						let open = store.collapsedSections.contains(subID)
-						subHeading(store.isGmailAccount(group.account) ? "Labels" : "Folders", isOpen: open) { store.toggleSection(subID) }
+						subHeading(store.isGmailAccount(group.account) ? "Labels" : "Folders", isOpen: open, onAdd: canCreate ? {
+							let parent = group.inbox ?? store.inboxAddresses(of: group.account.id).first
+							store.folderRequest = .init(accountID: group.account.id, kind: .create(parentID: parent?.id))
+						} : nil) { store.toggleSection(subID) }
 						if open { ForEach(folders) { box in folderRow(box, group: group) } }
 					}
 				}
@@ -438,40 +459,56 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 	}
 
 	/// A section heading like `heading`, closed until opened (its state is kept under an `open:` key).
-	private func foldHeading(_ title: String, isOpen: Bool, toggle: @escaping () -> Void) -> some View {
-		Button {
-			withAnimation(.snappy(duration: 0.2)) { toggle() }
-		} label: {
-			HStack(spacing: 5) {
-				Text(title).font(Typography.meta.weight(.medium)).lineLimit(1)
-				HIcon(.chevronRight, size: 10).rotationEffect(.degrees(isOpen ? 90 : 0))
-				Spacer(minLength: 0)
+	/// `onAdd` puts a + at the right end.
+	private func foldHeading(_ title: String, isOpen: Bool, onAdd: (() -> Void)? = nil, toggle: @escaping () -> Void) -> some View {
+		HStack(spacing: 0) {
+			Button {
+				withAnimation(.snappy(duration: 0.2)) { toggle() }
+			} label: {
+				HStack(spacing: 5) {
+					Text(title).font(Typography.meta.weight(.medium)).lineLimit(1)
+					HIcon(.chevronRight, size: 10).rotationEffect(.degrees(isOpen ? 90 : 0))
+					Spacer(minLength: 0)
+				}
+				.foregroundStyle(.secondary)
+				.contentShape(Rectangle())
 			}
-			.foregroundStyle(.secondary)
-			.padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 4)
-			.contentShape(Rectangle())
+			.buttonStyle(.plain)
+			.help(isOpen ? "Hide \(title)" : "Show \(title)")
+			if let onAdd { addButton(title: title, action: onAdd) }
 		}
-		.buttonStyle(.plain)
-		.help(isOpen ? "Hide \(title)" : "Show \(title)")
+		.padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 4)
 	}
 
 	/// A folded sub-section heading inside a group; the group keeps its state under an `open:` key,
 	/// so it starts closed.
-	private func subHeading(_ title: String, isOpen: Bool, toggle: @escaping () -> Void) -> some View {
-		Button {
-			withAnimation(.snappy(duration: 0.2)) { toggle() }
-		} label: {
-			HStack(spacing: 8) {
-				HIcon(.chevronRight, size: 10).rotationEffect(.degrees(isOpen ? 90 : 0)).frame(width: 16)
-				Text(title).font(Typography.meta.weight(.medium))
-				Spacer(minLength: 0)
+	private func subHeading(_ title: String, isOpen: Bool, onAdd: (() -> Void)? = nil, toggle: @escaping () -> Void) -> some View {
+		HStack(spacing: 0) {
+			Button {
+				withAnimation(.snappy(duration: 0.2)) { toggle() }
+			} label: {
+				HStack(spacing: 8) {
+					HIcon(.chevronRight, size: 10).rotationEffect(.degrees(isOpen ? 90 : 0)).frame(width: 16)
+					Text(title).font(Typography.meta.weight(.medium))
+					Spacer(minLength: 0)
+				}
+				.foregroundStyle(.secondary)
+				.contentShape(Rectangle())
 			}
-			.foregroundStyle(.secondary)
-			.padding(.horizontal, 10).padding(.vertical, 6)
-			.contentShape(Rectangle())
+			.buttonStyle(.plain)
+			.help(isOpen ? "Hide \(title)" : "Show \(title)")
+			if let onAdd { addButton(title: title, action: onAdd) }
+		}
+		.padding(.horizontal, 10).padding(.vertical, 6)
+	}
+
+	private func addButton(title: String, action: @escaping () -> Void) -> some View {
+		let noun = title.hasSuffix("s") ? String(title.dropLast()) : title
+		return Button(action: action) {
+			HIcon(.add, size: 12).foregroundStyle(.secondary).frame(width: 22, height: 18).contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.help(isOpen ? "Hide \(title)" : "Show \(title)")
+		.help("New \(noun)")
 	}
 
 	/// A collapsible heading for an account, or for one of its inboxes.

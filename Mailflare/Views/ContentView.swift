@@ -93,6 +93,7 @@ struct ContentView: View {
 	.sheet(item: $store.inboxViewEditor) { view in
 		InboxViewEditor(view: view, isNew: !store.inboxViews.contains { $0.id == view.id })
 	}
+		.sheet(item: $store.folderRequest) { request in FolderEditor(request: request) }
 		.sheet(item: $store.customTabEditor) { tab in
 			CustomTabEditor(tab: tab, isNew: !store.customTabs.contains { $0.id == tab.id })
 		}

@@ -346,6 +346,9 @@ final class RowMetrics {
 	private var offsets: [CGFloat] = [0]
 	private var lines: [String: (preview: String, count: Int)] = [:]
 	private var width: CGFloat = 0
+	/// What the heights were last worked out for. The list's body asks on every scroll step, and the
+	/// messages are usually the same array, which compares at once.
+	private var measured: [MessageSummary] = []
 
 	private static let noticeFont = NSFont.systemFont(ofSize: Typography.baseSize - 1)
 	private static func lineHeight(_ font: NSFont) -> CGFloat { ceil(font.ascender - font.descender + font.leading) }
@@ -355,7 +358,9 @@ final class RowMetrics {
 	func update(messages: [MessageSummary], width: CGFloat, isDraft: (MessageSummary) -> Bool) {
 		// Preview text spans the row minus its insets.
 		let textWidth = max(width - MessageRow.textInset - 16, 40)
-		if abs(textWidth - self.width) > 0.5 { self.width = textWidth; lines.removeAll(keepingCapacity: true) }
+		if abs(textWidth - self.width) > 0.5 { self.width = textWidth; lines.removeAll(keepingCapacity: true); measured = [] }
+		else if heights.count == messages.count, messages == measured { return }
+		measured = messages
 		heights.removeAll(keepingCapacity: true)
 		offsets.removeAll(keepingCapacity: true)
 		heights.reserveCapacity(messages.count)
