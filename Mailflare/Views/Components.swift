@@ -594,6 +594,122 @@ extension View {
 	}
 }
 
+/// Set by an open dropdown, so what holds it can be drawn above the views after it.
+struct DropdownOpenKey: PreferenceKey {
+	static let defaultValue = false
+	static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct RaisedWhileDropdownOpen: ViewModifier {
+	@State private var isOpen = false
+
+	func body(content: Content) -> some View {
+		content
+			.onPreferenceChange(DropdownOpenKey.self) { isOpen = $0 }
+			.zIndex(isOpen ? 10 : 0)
+	}
+}
+
+extension View {
+	/// Draws this view above its siblings while a dropdown inside it is open, so the card is not
+	/// covered by what follows. Put it on each row or block that holds a dropdown.
+	func raisedWhileDropdownOpen() -> some View { modifier(RaisedWhileDropdownOpen()) }
+}
+
+/// A button that opens a `DropdownCard` of `items` just below it, or above it when there is no room
+/// below in the window. A click anywhere else closes it. `reservedBelow` is room to leave at the
+/// window's bottom, for a footer the card must not slide under.
+struct DropdownAnchor<Label: View, Items: View>: View {
+	var width: CGFloat = 190
+	var itemCount: Int
+	var reservedBelow: CGFloat = 0
+	@Binding var isOpen: Bool
+	@ViewBuilder var label: Label
+	@ViewBuilder var items: Items
+
+	@State private var frame = CGRect.zero
+
+	private var opensUp: Bool {
+		guard let window = NSApp.keyWindow?.contentView?.bounds.height else { return false }
+		let below = window - reservedBelow - frame.maxY
+		return below < CGFloat(itemCount) * 33 + 12 && frame.minY > below
+	}
+
+	var body: some View {
+		let up = opensUp
+		Button { withAnimation(.snappy(duration: 0.2)) { isOpen.toggle() } } label: { label }
+			.buttonStyle(.plain)
+			.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
+			.overlay(alignment: up ? .bottomLeading : .topLeading) {
+				if isOpen {
+					DropdownCard(width: width, anchor: up ? .bottomLeading : .topLeading) { items }
+						.offset(y: up ? -(frame.height + 4) : frame.height + 4)
+				}
+			}
+			.clickAway(isActive: isOpen) { withAnimation(.snappy(duration: 0.2)) { isOpen = false } }
+			.preference(key: DropdownOpenKey.self, value: isOpen)
+	}
+}
+
+/// A choice drawn with a chevron; opening it drops the same card as Settings' pickers, with a check on
+/// the chosen row. It is the sibling of Settings' row picker for forms.
+struct DropdownPicker<Value: Hashable>: View {
+	enum Style {
+		/// A soft bordered field, as wide as it is given.
+		case field
+		/// A shorter field, as wide as its value, to sit in a line of text.
+		case compact
+		/// No box of its own, for a segment of a field that draws one around several controls.
+		case bare
+	}
+
+	var options: [(label: String, value: Value)]
+	@Binding var selection: Value
+	var width: CGFloat = 190
+	var style = Style.field
+	var reservedBelow: CGFloat = 0
+	@State private var isOpen = false
+
+	private var currentLabel: String { options.first { $0.value == selection }?.label ?? "" }
+
+	var body: some View {
+		DropdownAnchor(width: width, itemCount: options.count, reservedBelow: reservedBelow, isOpen: $isOpen) {
+			HStack(spacing: 6) {
+				Text(currentLabel).font(Typography.body).lineLimit(1)
+				if style != .compact { Spacer(minLength: 4) }
+				HIcon(.chevronDown, size: 12).foregroundStyle(.secondary)
+					.rotationEffect(.degrees(isOpen ? 180 : 0))
+			}
+			.padding(.horizontal, style == .compact ? 10 : 12).padding(.vertical, style == .compact ? 5 : 10)
+			.modifier(PickerBox(style: style))
+			.contentShape(Rectangle())
+		} items: {
+			ForEach(options.indices, id: \.self) { index in
+				DropdownRow(label: options[index].label, isSelected: options[index].value == selection) {
+					selection = options[index].value
+					withAnimation(.snappy(duration: 0.2)) { isOpen = false }
+				}
+			}
+		}
+		.fixedSize(horizontal: style == .compact, vertical: false)
+	}
+
+	private struct PickerBox: ViewModifier {
+		var style: Style
+
+		func body(content: Content) -> some View {
+			let radius: CGFloat = style == .compact ? 9 : 12
+			switch style {
+			case .bare: content
+			default:
+				content
+					.background(AppTheme.composerContextFill, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+					.overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(AppTheme.composerStroke, lineWidth: 1))
+			}
+		}
+	}
+}
+
 // MARK: Skeleton
 
 /// A grey placeholder bar that breathes while content loads.

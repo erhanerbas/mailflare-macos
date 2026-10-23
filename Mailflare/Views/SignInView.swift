@@ -31,11 +31,13 @@ struct SignInView: View {
 			}
 			ScrollViewReader { proxy in
 				ScrollView { form }
-					.safeAreaInset(edge: .bottom, spacing: 0) { bottomBar(proxy) }
+					.safeAreaInset(edge: .bottom, spacing: 0) {
+						bottomBar(proxy).background(alignment: .top) { ModalFade().frame(height: 24).offset(y: -24) }
+					}
 			}
 		}
 		.frame(width: 420)
-		.frame(maxHeight: 680)
+		.frame(maxHeight: min(680, ModalMetrics.maxHeight))
 		.background(AppTheme.background)
 		.overlay(alignment: .topTrailing) {
 			if isPopup {

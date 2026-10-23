@@ -9,13 +9,13 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
 	var title: String {
 		switch self {
-		case .general: "General"
+		case .general: "Preferences"
 		case .notifications: "Notifications"
 		case .accounts: "Accounts"
 		case .ai: "AI Providers"
 		case .license: "License"
 		case .support: "Support"
-		case .about: "About"
+		case .about: "Version"
 		}
 	}
 
@@ -28,6 +28,27 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 		case .license: .vip
 		case .support: .support
 		case .about: .info
+		}
+	}
+}
+
+/// How the sidebar groups the pages while Settings is open.
+enum SettingsSection: CaseIterable, Identifiable {
+	case general, about
+
+	var id: Self { self }
+
+	var title: String {
+		switch self {
+		case .general: "General"
+		case .about: "About"
+		}
+	}
+
+	var pages: [SettingsPage] {
+		switch self {
+		case .general: [.general, .accounts, .notifications, .ai]
+		case .about: [.license, .support, .about]
 		}
 	}
 }

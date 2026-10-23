@@ -44,9 +44,13 @@ struct SidebarView: View {
 			.keyboardShortcut(.escape, modifiers: [])
 			.help("Back to Inbox (Esc)")
 			.padding(.bottom, 6)
-			ForEach(SettingsPage.allCases) { page in
-				SidebarRow(icon: page.icon, title: page.title, badge: 0, tint: nil, isSelected: store.settingsPage == page) {
-					store.settingsPage = page
+			ForEach(SettingsSection.allCases) { group in
+				Text(group.title).font(Typography.meta.weight(.medium)).foregroundStyle(.secondary)
+					.padding(.horizontal, 10).padding(.top, group == .general ? 6 : 14).padding(.bottom, 4)
+				ForEach(group.pages) { page in
+					SidebarRow(icon: page.icon, title: page.title, badge: 0, tint: nil, isSelected: store.settingsPage == page) {
+						store.settingsPage = page
+					}
 				}
 			}
 			Spacer(minLength: 0)
@@ -62,14 +66,8 @@ struct SidebarView: View {
 				.allowsHitTesting(!switcherOpen)
 			ScrollView {
 				VStack(alignment: .leading, spacing: 2) {
-					row(.smartToday, "Today", .smartMailbox)
-						.padding(.top, 4)
-					// Favorites, then everything else for the inbox in view; an item is in one or the other.
-					section(id: "favorites", title: "Favorites", keys: store.favoriteKeys, isFavorites: true)
-					section(id: "rest", title: store.scopeTitle, keys: store.otherKeys, isFavorites: false)
-					if store.isGmail {
-						section(id: "labels", title: "Labels", keys: store.labelKeys, isFavorites: false, emptyText: "No labels")
-					}
+					topList
+					if store.showsAllInboxes { accountsSection } else { singleSections }
 				}
 				.padding(.horizontal, Self.gutter)
 				.padding(.bottom, 12)
@@ -92,7 +90,7 @@ struct SidebarView: View {
 		let activeView = store.activeView
 		let inbox = activeView != nil ? nil : (store.currentInbox ?? (multipleInboxes ? nil : store.inboxAddresses.first))
 		let title = activeView?.name ?? inbox.map { store.label($0) }
-			?? (multipleInboxes ? "All Inboxes" : (store.account.map(store.accountName) ?? "Mailflare"))
+			?? (store.account.map(store.switcherName) ?? "Mailflare")
 		return Button {
 			withAnimation(.snappy(duration: 0.22)) { switcherOpen.toggle() }
 		} label: {
@@ -195,8 +193,12 @@ struct SidebarView: View {
 		let rows = store.accountList.reduce(0) { total, account in
 			let inboxes = store.inboxAddresses(of: account.id).count
 			return total + 1 + (inboxes > 1 ? inboxes : 0)
-		} + store.inboxViews.count
+		} + store.inboxViews.count + (store.accountList.count > 1 ? 1 : 0)
 		let content = VStack(alignment: .leading, spacing: 2) {
+			if store.accountList.count > 1 {
+				allAccountsRow
+				Rectangle().fill(AppTheme.cardStroke).frame(height: 1).padding(.vertical, 6).padding(.horizontal, 6)
+			}
 			ForEach(Array(store.accountList.enumerated()), id: \.element.id) { index, account in
 				if index > 0 { Rectangle().fill(AppTheme.cardStroke).frame(height: 1).padding(.vertical, 6).padding(.horizontal, 6) }
 				accountRows(account)
@@ -210,23 +212,42 @@ struct SidebarView: View {
 		let natural = CGFloat(rows) * 48 + CGFloat(max(store.accountList.count - 1, 0)) * 14 + 12 + (store.inboxViews.isEmpty ? 0 : 14)
 		return VStack(spacing: 0) {
 			Group {
-				if natural > 280 { ScrollView { content }.frame(height: 280) } else { content }
+				if natural > 280 {
+					// No rule above the footer: scrolled rows fade into the card instead.
+					ScrollView { content }.frame(height: 280)
+						.overlay(alignment: .bottom) {
+							LinearGradient(colors: [AppTheme.elevated.opacity(0), AppTheme.elevated], startPoint: .top, endPoint: .bottom)
+								.frame(height: 28)
+								.allowsHitTesting(false)
+						}
+				} else { content }
 			}
-			Rectangle().fill(AppTheme.cardStroke).frame(height: 1).padding(.horizontal, 10)
 			VStack(alignment: .leading, spacing: 2) {
-				actionRow(.allInboxes, "New Inbox View") { closeSwitcher(); store.inboxViewEditor = InboxView() }
 				actionRow(.settings, "Manage Account") { closeSwitcher(); store.settingsPage = .accounts }
 			}
 			.padding(.vertical, 6)
 		}
 	}
 
+	/// Every inbox of every account in one list.
+	private var allAccountsRow: some View {
+		SwitcherRow(
+			isSelected: store.isAllAccounts,
+			unread: store.unreadAllAccounts,
+			action: { store.selectAllAccounts(); closeSwitcher() }
+		) {
+			accountStack(store.accountList.map(\.id), size: 24, step: 13)
+		} text: {
+			Text("Unified Inbox").font(.system(size: 14, weight: .semibold)).lineLimit(1)
+			Text("\(store.accountList.count) accounts").font(Typography.meta).foregroundStyle(.secondary).lineLimit(1)
+		}
+	}
+
 	private func viewRow(_ view: InboxView) -> some View {
-	ViewRow(
+	SwitcherRow(
 		isSelected: store.activeViewID == view.id,
 		unread: store.unreadCount(of: view),
-		action: { store.selectView(view.id); closeSwitcher() },
-		edit: { closeSwitcher(); store.inboxViewEditor = view }
+		action: { store.selectView(view.id); closeSwitcher() }
 	) {
 		accountStack(view.accountIDs, size: 24, step: 13)
 	} text: {
@@ -259,7 +280,7 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 				ProfileAvatar(key: AvatarCache.key(account: account.id), name: store.accountName(account), size: 32)
 			}
 		} text: {
-			Text(store.accountName(account)).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+			Text(store.switcherName(account)).font(.system(size: 14, weight: .semibold)).lineLimit(1)
 			Text(showInboxes ? "\(account.email) (\(inboxes.count) inboxes)" : account.email)
 				.font(Typography.meta).foregroundStyle(.secondary).lineLimit(1)
 		}
@@ -281,6 +302,198 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 	}
 
 	private func closeSwitcher() { withAnimation(.snappy(duration: 0.22)) { switcherOpen = false } }
+
+	// MARK: Items and sections
+
+	private func collapsed(_ id: String) -> Bool { store.collapsedSections.contains(id) }
+
+	/// A small collapsible heading shared by the sections.
+	private func heading(_ id: String, _ title: String) -> some View {
+		Button {
+			withAnimation(.snappy(duration: 0.2)) { store.toggleSection(id) }
+		} label: {
+			HStack(spacing: 5) {
+				Text(title).font(Typography.meta.weight(.medium)).lineLimit(1)
+				HIcon(.chevronRight, size: 10).rotationEffect(.degrees(collapsed(id) ? 0 : 90))
+				Spacer(minLength: 0)
+			}
+			.foregroundStyle(.secondary)
+			.padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 4)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.help(collapsed(id) ? "Show \(title)" : "Hide \(title)")
+	}
+
+	/// Everything Organize has on, directly below Today, over the whole scope the dropdown chose. The
+	/// custom tabs follow Today (or lead, when Today is turned off), each with its unread count.
+	private var topList: some View {
+		VStack(alignment: .leading, spacing: 2) {
+			if !store.unifiedShows(.today) { customTabRows }
+			ForEach(UnifiedViewKind.allCases.filter { store.unifiedShows($0) }) { kind in
+				let title = kind == .inbox ? (store.showsAllInboxes ? "Inboxes" : "Inbox") : kind.title
+				let badge = kind == .inbox || kind == .today ? store.unreadCount(for: kind.item) : 0
+				SidebarRow(icon: kind.icon, title: title, badge: badge, tint: nil,
+						   isSelected: store.settingsPage == nil && store.focus == nil && store.sidebar == kind.item) {
+					store.openTopItem(kind.item)
+				}
+				if kind == .today { customTabRows }
+			}
+		}
+		.padding(.top, 4)
+	}
+
+	@ViewBuilder
+	private var customTabRows: some View {
+		ForEach(store.customTabs) { tab in
+			let item = SidebarItem.customTab(tab.id)
+			SidebarRow(icon: tab.appIcon, title: tab.name, badge: store.unreadCount(for: item), tint: nil,
+					   isSelected: store.settingsPage == nil && store.focus == nil && store.sidebar == item) {
+				store.openTopItem(item)
+			}
+		}
+	}
+
+	/// The views Organize has off, as rows of one group or of the one inbox in view.
+	@ViewBuilder
+	private func offRows(group: MailStore.SidebarGroup?) -> some View {
+		let accountID = group?.account.id ?? store.account?.id ?? ""
+		let inbox = group != nil ? group?.inbox : store.scopeInbox
+		let selectedFocus = group?.focus
+		ForEach(UnifiedViewKind.allCases.filter { !store.unifiedShows($0) || ($0 == .inbox && group != nil) }) { kind in
+			if kind != .archive || store.hasRole("archive", accountID: accountID, inbox: inbox) {
+				SidebarRow(
+					icon: kind.icon, title: kind == .inbox ? "Inbox" : kind.title,
+					badge: kind == .inbox ? store.unreadCount(accountID: accountID, inbox: inbox) : 0, tint: nil,
+					isSelected: store.settingsPage == nil && store.focus == selectedFocus && store.sidebar == kind.item
+				) {
+					if let group { store.openGroupItem(kind.item, in: group) } else { store.openTopItem(kind.item) }
+				}
+			}
+		}
+	}
+
+	/// A folder or label row: of a group (any account in view) or of the one inbox in view.
+	private func folderRow(_ box: Mailbox, group: MailStore.SidebarGroup?) -> some View {
+		let item: SidebarItem = group != nil && store.activeViewID != nil
+			? .mailbox(ViewMessageID.make(account: group!.account.id, message: box.id)) : .mailbox(box.id)
+		let gmail = (group?.account ?? store.account).map(store.isGmailAccount) ?? false
+		return SidebarRow(
+			icon: gmail ? .label : .folder, title: box.name, badge: Int(box.unreadEmails), tint: nil,
+			isSelected: store.settingsPage == nil && store.focus == group?.focus && store.sidebar == item
+		) {
+			if let group { store.openGroupItem(item, in: group) } else { store.openTopItem(item) }
+		}
+	}
+
+	/// One inbox in view: its own section with the views Organize has off, then its folders or labels.
+	@ViewBuilder
+	private var singleSections: some View {
+		let hasOff = UnifiedViewKind.allCases.contains { !store.unifiedShows($0) }
+		let folders = store.scopeFolders
+		if hasOff {
+			let id = "inbox-off"
+			heading(id, store.scopeTitle)
+			if !collapsed(id) { offRows(group: nil) }
+		}
+		if !folders.isEmpty {
+			let subID = "open:inbox-folders"
+			let open = store.collapsedSections.contains(subID)
+			foldHeading(store.isGmail ? "Labels" : "Folders", isOpen: open) { store.toggleSection(subID) }
+			if open { ForEach(folders) { box in folderRow(box, group: nil) } }
+		}
+	}
+
+	/// Several inboxes in view: one level of groups, each an account or an inbox of one.
+	private var accountsSection: some View {
+		VStack(alignment: .leading, spacing: 2) {
+			// One account's own inboxes are just "Inboxes"; across accounts they are "Accounts".
+			let own = store.activeViewID == nil
+			heading(own ? "inboxes" : "accounts", own ? "Inboxes" : "Accounts")
+			if !collapsed(own ? "inboxes" : "accounts") {
+				ForEach(store.sidebarGroups) { group in groupView(group) }
+			}
+		}
+	}
+
+	private func groupView(_ group: MailStore.SidebarGroup) -> some View {
+		let id = "grp:" + group.id
+		return VStack(alignment: .leading, spacing: 2) {
+			groupHeader(id, avatarKey: group.avatarKey, name: group.title, help: group.help,
+						unread: store.unreadCount(accountID: group.account.id, inbox: group.inbox))
+			if !collapsed(id) {
+				// Rows line up under the avatar: chevron column (12) + gap (8) past the header's inset.
+				VStack(alignment: .leading, spacing: 2) {
+					offRows(group: group)
+					let folders = store.customFolders(of: group.account.id, inbox: group.inbox)
+					if !folders.isEmpty {
+						let subID = "open:" + id + "-folders"
+						let open = store.collapsedSections.contains(subID)
+						subHeading(store.isGmailAccount(group.account) ? "Labels" : "Folders", isOpen: open) { store.toggleSection(subID) }
+						if open { ForEach(folders) { box in folderRow(box, group: group) } }
+					}
+				}
+				.padding(.leading, 20)
+			}
+		}
+	}
+
+	/// A section heading like `heading`, closed until opened (its state is kept under an `open:` key).
+	private func foldHeading(_ title: String, isOpen: Bool, toggle: @escaping () -> Void) -> some View {
+		Button {
+			withAnimation(.snappy(duration: 0.2)) { toggle() }
+		} label: {
+			HStack(spacing: 5) {
+				Text(title).font(Typography.meta.weight(.medium)).lineLimit(1)
+				HIcon(.chevronRight, size: 10).rotationEffect(.degrees(isOpen ? 90 : 0))
+				Spacer(minLength: 0)
+			}
+			.foregroundStyle(.secondary)
+			.padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 4)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.help(isOpen ? "Hide \(title)" : "Show \(title)")
+	}
+
+	/// A folded sub-section heading inside a group; the group keeps its state under an `open:` key,
+	/// so it starts closed.
+	private func subHeading(_ title: String, isOpen: Bool, toggle: @escaping () -> Void) -> some View {
+		Button {
+			withAnimation(.snappy(duration: 0.2)) { toggle() }
+		} label: {
+			HStack(spacing: 8) {
+				HIcon(.chevronRight, size: 10).rotationEffect(.degrees(isOpen ? 90 : 0)).frame(width: 16)
+				Text(title).font(Typography.meta.weight(.medium))
+				Spacer(minLength: 0)
+			}
+			.foregroundStyle(.secondary)
+			.padding(.horizontal, 10).padding(.vertical, 6)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.help(isOpen ? "Hide \(title)" : "Show \(title)")
+	}
+
+	/// A collapsible heading for an account, or for one of its inboxes.
+	private func groupHeader(_ id: String, avatarKey: String, name: String, help: String, unread: Int, size: CGFloat = 20) -> some View {
+		Button {
+			withAnimation(.snappy(duration: 0.2)) { store.toggleSection(id) }
+		} label: {
+			HStack(spacing: 8) {
+				HIcon(.chevronRight, size: 10).rotationEffect(.degrees(collapsed(id) ? 0 : 90)).frame(width: 12)
+				ProfileAvatar(key: avatarKey, name: name, size: size)
+				Text(name).font(Typography.body.weight(.medium)).lineLimit(1)
+				Spacer(minLength: 4)
+				if collapsed(id) && unread > 0 { CountBadge(count: unread) }
+			}
+			.foregroundStyle(.primary.opacity(0.94))
+			.padding(.horizontal, 10).padding(.vertical, 7)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.help(help)
+	}
 
 	// MARK: Footer
 
@@ -308,18 +521,21 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 				.buttonStyle(.plain)
 				.padding(.bottom, 4)
 			}
-			Button { store.settingsPage = store.settingsPage ?? .general } label: {
-				HStack(spacing: 8) {
-					HIcon(.settings, size: 15)
-					Text("Settings").font(Typography.body)
-					Spacer(minLength: 0)
+			// Inside Settings the menu above is the way around, so this entry is only for the mail view.
+			if store.settingsPage == nil {
+				Button { store.settingsPage = .general } label: {
+					HStack(spacing: 8) {
+						HIcon(.settings, size: 15)
+						Text("Settings").font(Typography.body)
+						Spacer(minLength: 0)
+					}
+					.foregroundStyle(Color.secondary)
+					.padding(.vertical, 6)
+					.contentShape(Rectangle())
 				}
-				.foregroundStyle(store.settingsPage == nil ? Color.secondary : Color.primary)
-				.padding(.vertical, 6)
-				.contentShape(Rectangle())
+				.buttonStyle(.plain)
+				.help("Settings (⌘,)")
 			}
-			.buttonStyle(.plain)
-			.help("Settings (⌘,)")
 			HStack(spacing: 6) {
 				Text("\(store.displayBrandName) v\(MailStore.appVersion)").font(Typography.meta.weight(.medium)).foregroundStyle(.tertiary).lineLimit(1)
 				Spacer(minLength: 0)
@@ -361,109 +577,6 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 		.noticeSurface(radius: 12)
 		.padding(.bottom, 4)
 	}
-
-	/// A section whose title toggles it open or closed. Items can be dragged between Favorites and the
-	/// section below; dropping on a Favorites row puts the item just before it.
-	private func section(id: String, title: String, keys: [String], isFavorites: Bool, emptyText: String? = nil) -> some View {
-		let collapsed = store.collapsedSections.contains(id)
-		return VStack(alignment: .leading, spacing: 2) {
-			Button {
-				withAnimation(.snappy(duration: 0.2)) { store.toggleSection(id) }
-			} label: {
-				HStack(spacing: 5) {
-					Text(title).font(Typography.meta.weight(.medium)).lineLimit(1)
-					HIcon(.chevronRight, size: 10)
-						.rotationEffect(.degrees(collapsed ? 0 : 90))
-					Spacer(minLength: 0)
-				}
-				.foregroundStyle(.secondary)
-				.padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 4)
-				.contentShape(Rectangle())
-			}
-			.buttonStyle(.plain)
-			.help(collapsed ? "Show \(title)" : "Hide \(title)")
-
-			if !collapsed {
-				if keys.isEmpty {
-					Text(isFavorites ? "Drag items here" : (emptyText ?? "Nothing else"))
-						.font(Typography.meta).foregroundStyle(.tertiary)
-						.padding(.horizontal, 10).padding(.vertical, 6)
-				}
-				ForEach(keys, id: \.self) { key in
-					if let item = store.item(for: key) {
-						itemRow(key: key, item: item, isFavorite: isFavorites)
-					}
-				}
-			}
-		}
-		.contentShape(Rectangle())
-		.dropDestination(for: String.self) { dropped, _ in
-			for key in dropped { store.moveItem(key, toFavorites: isFavorites) }
-			return !dropped.isEmpty
-		}
-	}
-
-	private func itemRow(key: String, item: SidebarItem, isFavorite: Bool) -> some View {
-		let (title, icon, tint) = look(of: key, item: item)
-		return row(item, title, icon, tint: tint)
-			.draggable(key)
-			.contextMenu {
-				Button(isFavorite ? "Remove from Favorites" : "Add to Favorites") {
-					withAnimation(.snappy(duration: 0.2)) { store.moveItem(key, toFavorites: !isFavorite) }
-				}
-			}
-			// Dropping an item on a Favorites row places it just before that row.
-			.dropDestination(for: String.self) { dropped, _ in
-				guard isFavorite else {
-					for dragged in dropped { store.moveItem(dragged, toFavorites: false) }
-					return !dropped.isEmpty
-				}
-				for dragged in dropped { store.moveItem(dragged, toFavorites: true, before: key) }
-				return !dropped.isEmpty
-			}
-	}
-
-	/// The row's name, glyph and tint. Names say "All" when every inbox is in view.
-	private func look(of key: String, item: SidebarItem) -> (String, AppIcon, Color?) {
-		let all = store.showsAllInboxes
-		switch key {
-		case "inbox": return (all ? "All Inboxes" : "Inbox", .allInboxes, nil)
-		case "vips": return ("VIPs", .vip, nil)
-		case "flagged": return ("Flagged", .flag, nil)
-		case "remind": return ("Remind Me", .remind, nil)
-		case "drafts": return (all ? "All Drafts" : "Drafts", .drafts, nil)
-		case "sent": return (all ? "All Sent" : "Sent", .sent, nil)
-		case "junk": return (all ? "All Spam" : "Spam", .junk, nil)
-		case "trash": return (all ? "All Trash" : "Trash", .trash, nil)
-		case "archive": return (all ? "All Archive" : "Archive", .archive, nil)
-		default:
-			if case .mailbox(let id) = item, let box = store.mailbox(id) {
-				// In a view with several accounts, say whose folder it is.
-				let owner = ViewMessageID.split(id).account.flatMap { a in store.accountList.first { $0.id == a } }
-				let multi = (store.activeView?.accountIDs.count ?? 0) > 1
-				return (multi ? owner.map { "\(box.name) — \(store.accountName($0))" } ?? box.name : box.name, icon(for: box), nil)
-			}
-			return (key, .folder, nil)
-		}
-	}
-
-	private func icon(for box: Mailbox) -> AppIcon {
-		switch box.role {
-		case "inbox": .inbox
-		case "drafts": .drafts
-		case "sent": .sent
-		case "junk": .junk
-		case "trash": .trash
-		case "archive": .archive
-		default: store.isGmail ? .label : .folder
-		}
-	}
-
-	private func row(_ item: SidebarItem, _ title: String, _ icon: AppIcon, tint: Color? = nil) -> some View {
-		SidebarRow(icon: icon, title: title, badge: store.unreadCount(for: item), tint: tint, isSelected: store.sidebar == item) {
-			store.sidebar = item
-		}
-	}
 }
 
 /// One sidebar line: glyph, name, unread count. Selected rows fill like PiCode's, hovered rows lift faintly.
@@ -483,7 +596,7 @@ private struct SidebarRow: View {
 				HIcon(icon, size: 16).foregroundStyle(tint ?? (isSelected ? Color.primary : Color.secondary))
 				Text(title).font(Typography.body).lineLimit(1).foregroundStyle(.primary.opacity(0.94))
 				Spacer(minLength: 4)
-				if badge > 0 { Text("\(badge)").font(Typography.meta).foregroundStyle(.secondary) }
+				if badge > 0 { CountBadge(count: badge) }
 			}
 			.padding(.horizontal, 10)
 			.padding(.vertical, 7)
@@ -516,8 +629,7 @@ private struct SwitcherRow<Leading: View, Text_: View>: View {
 				leading
 				VStack(alignment: .leading, spacing: 1) { text }
 				Spacer(minLength: 4)
-				if unread > 0 { SwiftUI.Text(unread > 999 ? "999+" : "\(unread)").font(Typography.meta).foregroundStyle(.secondary) }
-				if isSelected { HIcon(.check, size: 14) }
+				if unread > 0 { CountBadge(count: unread) }
 			}
 			.padding(.leading, indent ? 22 : 10).padding(.trailing, 10).padding(.vertical, 6)
 			.background(RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -528,52 +640,6 @@ private struct SwitcherRow<Leading: View, Text_: View>: View {
 		.padding(.horizontal, 4)
 		.onHover { isHovering = $0 }
 	}
-}
-
-/// A saved inbox view in the switcher. Hovering it shows an edit button where the unread count sits.
-private struct ViewRow<Leading: View, Text_: View>: View {
-var isSelected: Bool
-var unread: Int
-var action: () -> Void
-var edit: () -> Void
-@ViewBuilder var leading: Leading
-@ViewBuilder var text: Text_
-
-@State private var isHovering = false
-
-var body: some View {
-	Button(action: action) {
-		HStack(spacing: 10) {
-			leading
-			VStack(alignment: .leading, spacing: 1) { text }
-			Spacer(minLength: 4)
-			if !isHovering {
-				if unread > 0 { SwiftUI.Text(unread > 999 ? "999+" : "\(unread)").font(Typography.meta).foregroundStyle(.secondary) }
-				if isSelected { HIcon(.check, size: 14) }
-			}
-		}
-		.padding(.leading, 10).padding(.trailing, 10).padding(.vertical, 6)
-		.background(RoundedRectangle(cornerRadius: 9, style: .continuous)
-			.fill(isSelected ? AppTheme.railSelection : (isHovering ? AppTheme.rowHighlight : .clear)))
-		.contentShape(Rectangle())
-	}
-	.buttonStyle(.plain)
-	.overlay(alignment: .trailing) {
-		if isHovering {
-			Button(action: edit) {
-				HIcon(.edit, size: 14)
-					.foregroundStyle(.secondary)
-					.frame(width: 26, height: 26)
-					.contentShape(Rectangle())
-			}
-			.buttonStyle(.light)
-			.help("Edit inbox view")
-			.padding(.trailing, 8)
-		}
-	}
-	.padding(.horizontal, 4)
-	.onHover { isHovering = $0 }
-}
 }
 
 /// A round profile picture, or the initials on a blue circle when there is none.
@@ -603,5 +669,19 @@ struct ProfileAvatar: View {
 		let parts = name.split(whereSeparator: { " .@".contains($0) }).prefix(2)
 		let letters = parts.compactMap(\.first).map { String($0).uppercased() }.joined()
 		return letters.isEmpty ? "?" : letters
+	}
+}
+
+/// An unread count in a fully rounded, softly filled pill.
+struct CountBadge: View {
+	var count: Int
+
+	var body: some View {
+		Text(count > 999 ? "999+" : "\(count)")
+			.font(Typography.meta.weight(.medium))
+			.foregroundStyle(.secondary)
+			.padding(.horizontal, 7).padding(.vertical, 1)
+			.frame(minWidth: 22)
+			.background(Capsule().fill(AppTheme.rowHighlight))
 	}
 }

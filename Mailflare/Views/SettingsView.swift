@@ -317,7 +317,7 @@ private struct GeneralSettings: View {
 	@State private var launchAtLogin = LaunchAtLogin.isEnabled
 
 	var body: some View {
-		SettingsGroup(title: "General") {
+		SettingsGroup(title: "Startup & Updates") {
 			SettingsToggle(title: "Open Mailflare at login", isOn: Binding(
 				get: { launchAtLogin },
 				set: { launchAtLogin = $0; if !LaunchAtLogin.set($0) { launchAtLogin = LaunchAtLogin.isEnabled } }
@@ -327,9 +327,10 @@ private struct GeneralSettings: View {
 				title: "Check for updates automatically",
 				detail: "New versions come from the Mailflare releases on GitHub.",
 				isOn: $autoCheck)
-			SettingsDivider()
+		}
+		SettingsGroup(title: "Appearance") {
 			SettingsPicker(
-				title: "Appearance",
+				title: "Theme",
 				options: AppAppearance.allCases.map { ($0.title, $0.rawValue) },
 				selection: $appearance)
 			SettingsDivider()
@@ -337,7 +338,8 @@ private struct GeneralSettings: View {
 				title: "Adapt message colors in dark mode",
 				detail: "Re-colors mail that has no dark styles of its own. The reader's color button overrides it per sender.",
 				isOn: $adaptColors)
-			SettingsDivider()
+		}
+		SettingsGroup(title: "Reading") {
 			SettingsPicker(
 				title: "Mark as read",
 				options: [("Immediately", 0), ("After 3 seconds", 3), ("After 10 seconds", 10), ("Never", -1)],
@@ -359,41 +361,214 @@ private struct NotificationSettingsPage: View {
 	@AppStorage(NotificationSettings.soundKey) private var sound = true
 	@AppStorage(NotificationSettings.badgeKey) private var badge = true
 
-	var body: some View {
-		if store.notifier.authorization == .denied {
-			SettingsGroup(title: "Permission") {
-				SettingsRow {
-					Text("Notifications for Mailflare are turned off in System Settings.")
-						.font(Typography.meta).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-					Spacer(minLength: 8)
-					Button("Open System Settings") {
-						if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") { NSWorkspace.shared.open(url) }
-					}
-					.buttonStyle(.pill)
+	/// On means macOS allows Mailflare's notifications and the app has not muted them itself.
+	private var allowSwitch: Binding<Bool> {
+		Binding(
+			get: { enabled && store.notifier.isAllowed },
+			set: { on in
+				enabled = on
+				guard on else { return }
+				switch store.notifier.authorization {
+				case .notDetermined: Task { await store.notifier.requestAuthorization() }
+				case .denied: MailNotifier.openSystemSettings()
+				default: break
 				}
-			}
+			})
+	}
+
+	private var allowDetail: String {
+		switch store.notifier.authorization {
+		case .denied: "Turned off for Mailflare in System Settings. Turn it on there, then come back."
+		case .notDetermined: "Mailflare will ask macOS for permission."
+		default: "Alert on new mail in any account's inbox. Turning this off stops Mailflare's alerts; macOS's own setting stays as it is."
 		}
-		SettingsGroup(title: "New mail", footer: "Mailflare checks every account for new mail about once a minute while it is open.") {
-			SettingsToggle(title: "Show notifications", detail: "For new mail in any account's inbox.", isOn: $enabled)
+	}
+
+	var body: some View {
+		SettingsGroup(title: "Notifications", footer: "Mailflare checks every account for new mail about once a minute while it is open. Each account can be muted on its page under Accounts.") {
+			SettingsToggle(title: "Allow notifications", detail: allowDetail, isOn: allowSwitch)
+			SettingsDivider()
+			SettingsRow {
+				Text("Banner style and sounds for Mailflare are also managed by macOS.")
+					.font(Typography.meta).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+				Spacer(minLength: 8)
+				Button("Open System Settings") { MailNotifier.openSystemSettings() }
+					.buttonStyle(.pill)
+			}
 			SettingsDivider()
 			SettingsToggle(title: "Show previews", detail: "Include the sender and subject. Off, a notification only says there is new mail.", isOn: $previews)
-				.disabled(!enabled)
+				.disabled(!allowSwitch.wrappedValue)
 			SettingsDivider()
 			SettingsToggle(title: "Play a sound", isOn: $sound)
-				.disabled(!enabled)
+				.disabled(!allowSwitch.wrappedValue)
 			SettingsDivider()
 			SettingsToggle(title: "Show unread count on the Dock icon", isOn: $badge)
 		}
-		.onChange(of: enabled) { _, on in if on { Task { await store.notifier.requestAuthorization() } } }
 		.onChange(of: badge) { _, _ in store.updateBadge() }
 		.task { await store.notifier.refreshAuthorization() }
+		// The user may have changed it in System Settings while Mailflare was in the background.
+		.onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+			Task { await store.notifier.refreshAuthorization() }
+		}
 	}
 }
 
+/// The Accounts page: a menu of three tabs, Organize, Accounts and Inbox Views.
 private struct AccountSettings: View {
+	private enum Tab: String, CaseIterable, Identifiable {
+		case accounts = "Accounts", organize = "Organize", views = "Inbox Views", tabs = "Custom Tabs"
+		var id: String { rawValue }
+	}
+
+	@State private var tab: Tab = .accounts
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 22) {
+			HStack(spacing: 2) {
+				ForEach(Tab.allCases) { item in
+					Button { tab = item } label: {
+						Text(item.rawValue).font(Typography.body)
+							.foregroundStyle(tab == item ? Color.primary : Color.secondary)
+							.padding(.horizontal, 12).padding(.vertical, 6)
+							.background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tab == item ? AppTheme.railSelection : .clear))
+							.contentShape(Rectangle())
+					}
+					.buttonStyle(.plain)
+				}
+				Spacer(minLength: 0)
+			}
+			switch tab {
+			case .organize: OrganizeTab()
+			case .accounts: AccountsTab()
+			case .views: InboxViewsTab()
+			case .tabs: CustomTabsTab()
+			}
+		}
+	}
+}
+
+/// Which views the sidebar lists, for the Unified section and for each account alike, and which
+/// accounts Unified draws from.
+private struct OrganizeTab: View {
+	@Environment(MailStore.self) private var store
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 22) {
+			SettingsGroup(title: "Views", footer: "On: listed below Today for everything in the account dropdown. Off: listed in the section of each inbox instead.") {
+				ForEach(Array(UnifiedViewKind.allCases.enumerated()), id: \.element.id) { index, kind in
+					if index > 0 { SettingsDivider() }
+					SettingsRow {
+						HIcon(kind.icon, size: 16).foregroundStyle(.secondary).frame(width: 22)
+						Text(kind.title).font(Typography.body)
+						Spacer(minLength: 12)
+						Toggle("", isOn: Binding(get: { store.unifiedShows(kind) }, set: { store.setUnified(kind, shown: $0) }))
+							.labelsHidden().toggleStyle(.switch)
+					}
+				}
+			}
+		}
+	}
+}
+
+/// Tabs under Today in the sidebar: Today itself, which is fixed, and the ones made here.
+private struct CustomTabsTab: View {
+	@Environment(MailStore.self) private var store
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 22) {
+			SettingsGroup(title: "Built in") {
+				row(.today) { Text("Built in").font(Typography.meta).foregroundStyle(.tertiary) }
+			}
+			SettingsGroup(
+				title: "Custom Tabs",
+				footer: "Tabs are listed under Today and show the Inbox mail that matches their rules, with the unread count beside them. The newest 1,000 messages of each inbox are checked."
+			) {
+				if store.customTabs.isEmpty {
+					SettingsRow { Text("No custom tabs yet").font(Typography.body).foregroundStyle(.secondary) }
+				}
+				ForEach(Array(store.customTabs.enumerated()), id: \.element.id) { index, tab in
+					if index > 0 { SettingsDivider() }
+					row(tab) {
+						Button("Edit") { store.customTabEditor = tab }.buttonStyle(.pill)
+						Button("Delete") { store.deleteCustomTab(tab.id) }.buttonStyle(.pill).foregroundStyle(.red)
+					}
+				}
+			}
+			WideButton(title: "New Custom Tab", icon: .add) { store.customTabEditor = CustomTab(rules: [CustomTab.Rule(kind: .from)]) }
+		}
+	}
+
+	private func row<Trailing: View>(_ tab: CustomTab, @ViewBuilder trailing: () -> Trailing) -> some View {
+		SettingsRow {
+			HIcon(tab.appIcon, size: 16).foregroundStyle(.secondary).frame(width: 22)
+			VStack(alignment: .leading, spacing: 1) {
+				Text(tab.name).font(Typography.bodySemibold).lineLimit(1)
+				Text(tab.summary.prefix(1).uppercased() + tab.summary.dropFirst()).font(Typography.meta).foregroundStyle(.secondary).lineLimit(2)
+			}
+			Spacer(minLength: 8)
+			trailing()
+		}
+	}
+}
+
+/// Custom inboxes that combine chosen accounts and inboxes.
+private struct InboxViewsTab: View {
+	@Environment(MailStore.self) private var store
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 22) {
+			SettingsGroup(title: "Unified Inbox") {
+				ForEach(Array(store.accountList.enumerated()), id: \.element.id) { index, account in
+					let isOn = store.unifiedIncludes(account.id)
+					if index > 0 { SettingsDivider() }
+					SettingsRow {
+						ProfileAvatar(key: AvatarCache.key(account: account.id), name: store.accountName(account), size: 28)
+						VStack(alignment: .leading, spacing: 1) {
+							Text(store.accountName(account)).font(Typography.body).lineLimit(1)
+							Text(account.email).font(Typography.meta).foregroundStyle(.secondary).lineLimit(1)
+						}
+						Spacer(minLength: 12)
+						Toggle("", isOn: Binding(get: { isOn }, set: { store.setUnified(account.id, included: $0) }))
+							.labelsHidden().toggleStyle(.switch)
+							.disabled(isOn && store.unifiedIncludedCount <= 1)
+					}
+				}
+			}
+			if store.inboxViews.isEmpty {
+				SettingsGroup(title: "Custom Inboxes View", footer: "An inbox view combines the accounts and inboxes you choose into one list.") {
+					SettingsRow {
+						Text("No inbox views yet").font(Typography.body).foregroundStyle(.secondary)
+					}
+				}
+			} else {
+				SettingsGroup(title: "Inbox Views") {
+					ForEach(Array(store.inboxViews.enumerated()), id: \.element.id) { index, view in
+						if index > 0 { SettingsDivider() }
+						SettingsRow {
+							VStack(alignment: .leading, spacing: 1) {
+								Text(view.name).font(Typography.bodySemibold).lineLimit(1)
+								let inboxes = view.members.count, accounts = view.accountIDs.count
+								Text("\(inboxes) inbox\(inboxes == 1 ? "" : "es") · \(accounts) account\(accounts == 1 ? "" : "s")")
+									.font(Typography.meta).foregroundStyle(.secondary)
+							}
+							Spacer(minLength: 8)
+							Button("Edit") { store.inboxViewEditor = view }.buttonStyle(.pill)
+							Button("Delete") { store.deleteInboxView(view.id) }.buttonStyle(.pill).foregroundStyle(.red)
+						}
+					}
+				}
+			}
+			WideButton(title: "New Inbox View", icon: .add) { store.inboxViewEditor = InboxView() }
+		}
+	}
+}
+
+private struct AccountsTab: View {
 	@Environment(MailStore.self) private var store
 	/// The account whose page is open; nil shows the list. The page slides in from the right.
 	@State private var openID: String?
+	/// The account waiting on the sign-out confirmation.
+	@State private var signingOut: Account?
 
 	var body: some View {
 		ZStack(alignment: .top) {
@@ -406,6 +581,16 @@ private struct AccountSettings: View {
 		}
 		.frame(maxWidth: .infinity, alignment: .top)
 		.clipped()
+		.confirmationDialog(
+			signingOut.map { "Sign out of \($0.email)?" } ?? "Sign out?",
+			isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
+			titleVisibility: .visible,
+			presenting: signingOut
+		) { account in
+			Button("Sign Out", role: .destructive) { store.signOut(account) }
+		} message: { _ in
+			Text("Its saved mail and any unsent changes are removed from this Mac. Mail on the server is not affected.")
+		}
 	}
 
 	private var list: some View {
@@ -413,19 +598,26 @@ private struct AccountSettings: View {
 			SettingsGroup(title: "Accounts") {
 				ForEach(Array(store.accountList.enumerated()), id: \.element.id) { index, account in
 					if index > 0 { SettingsDivider() }
-					Button { withAnimation(.snappy(duration: 0.25)) { openID = account.id } } label: {
-						SettingsRow {
-							ProfileAvatar(key: AvatarCache.key(account: account.id), name: store.accountName(account), size: 32)
-							VStack(alignment: .leading, spacing: 1) {
-								Text(store.accountName(account)).font(Typography.bodySemibold).lineLimit(1)
-								Text(account.email).font(Typography.meta).foregroundStyle(.secondary).lineLimit(1)
+					SettingsRow {
+						Button { withAnimation(.snappy(duration: 0.25)) { openID = account.id } } label: {
+							HStack(spacing: 10) {
+								ProfileAvatar(key: AvatarCache.key(account: account.id), name: store.accountName(account), size: 32)
+								VStack(alignment: .leading, spacing: 1) {
+									Text(store.accountName(account)).font(Typography.bodySemibold).lineLimit(1)
+									Text(account.email).font(Typography.meta).foregroundStyle(.secondary).lineLimit(1)
+								}
+								Spacer(minLength: 8)
 							}
-							Spacer(minLength: 8)
-							HIcon(.chevronRight, size: 12).foregroundStyle(.secondary)
+							.contentShape(Rectangle())
 						}
-						.contentShape(Rectangle())
+						.buttonStyle(.plain)
+						Button("Sign Out") { signingOut = account }
+							.buttonStyle(.pill).foregroundStyle(.red)
+						Button { withAnimation(.snappy(duration: 0.25)) { openID = account.id } } label: {
+							HIcon(.chevronRight, size: 12).foregroundStyle(.secondary).contentShape(Rectangle())
+						}
+						.buttonStyle(.plain)
 					}
-					.buttonStyle(.plain)
 				}
 			}
 			WideButton(title: "Add Account", icon: .add) { store.showAddAccount = true }
@@ -495,6 +687,12 @@ private struct AccountDetail: View {
 					Spacer(minLength: 12)
 					Text(account.email).font(Typography.body).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled)
 				}
+			}
+
+			SettingsGroup(title: "Notifications", footer: "Off: no system notification for new mail in this account. Its mail still arrives and counts toward the Dock badge.") {
+				SettingsToggle(title: "Notify about new mail", isOn: Binding(
+					get: { store.notifier.notifies(account.id) },
+					set: { store.notifier.setNotifies($0, accountID: account.id) }))
 			}
 
 			SettingsGroup(title: "Signature", footer: signatureFooter) {
@@ -847,7 +1045,7 @@ private struct SupportSettings: View {
 	private static let issuesURL = URL(string: "https://github.com/hieunc229/mailflare-macos/issues")!
 
 	var body: some View {
-		SettingsGroup(title: "Need help?", footer: "Include your macOS version, the Mailflare version (see About) and, for a bug, the steps that cause it. Please leave out passwords, API keys and private mail.") {
+		SettingsGroup(title: "Need help?", footer: "Include your macOS version, the Mailflare version (see Version) and, for a bug, the steps that cause it. Please leave out passwords, API keys and private mail.") {
 			VStack(alignment: .leading, spacing: 6) {
 				Text("Found a bug, or want a feature?").font(Typography.bodySemibold)
 				Text("Create an issue on GitHub and describe what happened or what you would like. Every report is read there.")

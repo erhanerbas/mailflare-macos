@@ -45,6 +45,8 @@ struct MessageListView: View {
 	/// shorter, but its height still follows from the message alone (see `RowMetrics`), so which rows
 	/// are on screen follows from the scroll offset without laying any of them out.
 	static let rowHeight: CGFloat = 92
+	/// The space above the first row and below the last.
+	static let listInset: CGFloat = 4
 	@State private var metrics = RowMetrics()
 	@State private var listWidth: CGFloat = 360
 	/// Rows are kept for the visible page plus this many pages above and below it.
@@ -52,6 +54,22 @@ struct MessageListView: View {
 
 	@State private var firstVisibleRow = 0
 	@State private var viewportHeight: CGFloat = 600
+	/// The row a right click opened the menu on, and where in the list the click was.
+	@State private var menu: ContextMenuTarget?
+	/// The scroll offset, kept off `@State` so scrolling does not redraw the list for it.
+	@State private var scrollPosition = ScrollPosition()
+
+	private struct ContextMenuTarget: Equatable {
+		var id: String
+		var point: CGPoint
+	}
+
+	private final class ScrollPosition { var offset: CGFloat = 0 }
+
+	private static let menuWidth: CGFloat = 210
+	/// The menu's size before it is measured. Every menu has the same rows, so one measure serves all.
+	private static let menuHeight: CGFloat = 270
+	@State private var menuSize: CGSize?
 
 	/// Only the rows near the viewport exist as views; the rest are replaced by spacers of the same
 	/// height, so scrolling a long mailbox never builds (or keeps) thousands of rows.
@@ -73,7 +91,11 @@ struct MessageListView: View {
 				store.select(store.messages[next].id)
 				proxy.scrollTo(store.messages[next].id)
 			}
+			.onExitCommand { closeMenu() }
 		}
+		.overlay { menuLayer }
+		// Last, so it sees right clicks before anything below; it lets every other event through.
+		.overlay { RightClickCatcher { openMenu(at: $0) } }
 		.overlay {
 			if store.messages.isEmpty {
 				if store.searchText.isEmpty {
@@ -88,6 +110,8 @@ struct MessageListView: View {
 	/// Called by the scroll observer whenever the list scrolls or is resized; moves the window of
 	/// built rows so a row is a real view by the time it scrolls into sight.
 	private func scrolled(offset: CGFloat, viewport: CGFloat) {
+		if menu != nil, abs(offset - scrollPosition.offset) > 0.5 { menu = nil }
+		scrollPosition.offset = offset
 		let row = metrics.row(at: offset)
 		if row != firstVisibleRow { firstVisibleRow = row }
 		if abs(viewport - viewportHeight) > 1 { viewportHeight = viewport }
@@ -110,32 +134,113 @@ struct MessageListView: View {
 					let selected = message.id == store.selectedID
 					MessageRow(
 						message: message, isDraft: store.role(of: message) == "drafts", isSelected: selected,
+						isMenuTarget: menu?.id == message.id,
 						sourceAccount: store.activeViewID == nil ? nil : store.accountID(of: message),
 						showsDivider: index < count - 1 && !selected && !nextIsSelected,
 						height: metrics.height(at: index))
 						.id(message.id)
 						.onTapGesture { store.select(message.id) }
-						.contextMenu { menu(for: message) }
 						.onAppear { store.loadMoreIfNeeded(current: message) }
 				}
 			}
 			Color.clear.frame(height: max(metrics.offset(of: count) - metrics.offset(of: end), 0))
 		}
 		.background(ScrollObserver { offset, viewport in scrolled(offset: offset, viewport: viewport) })
-		.padding(.vertical, 4)
+		.padding(.vertical, Self.listInset)
 	}
 
-	@ViewBuilder
-	private func menu(for m: MessageSummary) -> some View {
-		Button("Reply") { store.reply(to: m.id, all: false) }
-		Button("Forward") { store.forward(m.id) }
-		Divider()
-		Button(m.flagged ? "Remove Flag" : "Flag") { store.toggleFlag(m.id) }
-		Button(m.seen ? "Mark as Unread" : "Mark as Read") { store.setRead(m.id, !m.seen) }
-		Divider()
-		Button("Archive") { store.archive(m.id) }
-		Button("Move to Junk") { store.junk(m.id) }
-		Button("Delete", role: .destructive) { store.trash(m.id) }
+	// MARK: Right-click menu
+
+	/// Opens the menu on the row under a right click, at the click. A click below the last row does nothing.
+	private func openMenu(at point: CGPoint) {
+		let y = scrollPosition.offset + point.y - Self.listInset
+		guard y >= 0, y < metrics.offset(of: store.messages.count) else { closeMenu(); return }
+		let message = store.messages[metrics.row(at: y)]
+		withAnimation(.snappy(duration: 0.2)) { menu = ContextMenuTarget(id: message.id, point: point) }
+	}
+
+	private func closeMenu() {
+		guard menu != nil else { return }
+		withAnimation(.snappy(duration: 0.2)) { menu = nil }
+	}
+
+	/// The menu over the list: a click anywhere else closes it. The card opens at the click, flips to
+	/// the other side of it when it would run past an edge, and is kept inside the list, which clips
+	/// whatever sticks out of it.
+	private var menuLayer: some View {
+		GeometryReader { geo in
+			if let target = menu, let message = store.messages.first(where: { $0.id == target.id }) {
+				let size = menuSize ?? CGSize(width: Self.menuWidth, height: Self.menuHeight)
+				let margin: CGFloat = 8
+				let flipX = target.point.x + size.width > geo.size.width - margin
+				let flipY = target.point.y + size.height > geo.size.height - margin
+				let x = min(max(flipX ? target.point.x - size.width : target.point.x, margin), max(geo.size.width - size.width - margin, margin))
+				let y = min(max(flipY ? target.point.y - size.height : target.point.y, margin), max(geo.size.height - size.height - margin, margin))
+				ZStack(alignment: .topLeading) {
+					Color.clear.contentShape(Rectangle()).onTapGesture { closeMenu() }
+					menuCard(for: message, anchor: UnitPoint(x: flipX ? 1 : 0, y: flipY ? 1 : 0))
+						.fixedSize()
+						.onGeometryChange(for: CGSize.self) { $0.size } action: { menuSize = $0 }
+						.offset(x: x, y: y)
+						// Hidden for the one pass before its size is known, so it never shows out of place.
+						.opacity(menuSize == nil ? 0 : 1)
+				}
+			}
+		}
+	}
+
+	/// The "…" menu's card and rows, with the actions of a message.
+	private func menuCard(for m: MessageSummary, anchor: UnitPoint) -> some View {
+		let role = store.role(of: m)
+		func choose(_ action: () -> Void) {
+			closeMenu()
+			action()
+		}
+		return DropdownCard(width: Self.menuWidth, anchor: anchor) {
+			DropdownRow(label: "Reply", icon: .reply) { choose { store.reply(to: m.id, all: false) } }
+			DropdownRow(label: "Forward", icon: .forward) { choose { store.forward(m.id) } }
+			DropdownDivider()
+			DropdownRow(label: m.flagged ? "Remove Flag" : "Flag", icon: m.flagged ? .unflag : .flag) { choose { store.toggleFlag(m.id) } }
+			DropdownRow(label: m.seen ? "Mark as Unread" : "Mark as Read", icon: m.seen ? .markUnread : .markRead) { choose { store.setRead(m.id, !m.seen) } }
+			DropdownDivider()
+			DropdownRow(label: "Archive", icon: .archive, isEnabled: role != "archive") { choose { store.archive(m.id) } }
+			DropdownRow(label: "Move to Junk", icon: .junk, isEnabled: role != "junk") { choose { store.junk(m.id) } }
+			DropdownRow(label: "Delete", icon: .trash) { choose { store.trash(m.id) } }
+		}
+	}
+}
+
+/// Reports right clicks (and control-clicks) on the view it covers, as a point from that view's top-left
+/// corner. It is only hit by those clicks; hovers, scrolls and ordinary clicks fall through to what is under it.
+struct RightClickCatcher: NSViewRepresentable {
+	var onRightClick: (CGPoint) -> Void
+
+	func makeNSView(context: Context) -> CatcherView {
+		let view = CatcherView()
+		view.onRightClick = onRightClick
+		return view
+	}
+
+	func updateNSView(_ view: CatcherView, context: Context) { view.onRightClick = onRightClick }
+
+	final class CatcherView: NSView {
+		var onRightClick: ((CGPoint) -> Void)?
+
+		override var isFlipped: Bool { true }
+
+		override func hitTest(_ point: NSPoint) -> NSView? {
+			guard let event = NSApp.currentEvent else { return nil }
+			let isRightClick = event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control))
+			return isRightClick ? super.hitTest(point) : nil
+		}
+
+		override func rightMouseDown(with event: NSEvent) { report(event) }
+
+		override func mouseDown(with event: NSEvent) {
+			if event.modifierFlags.contains(.control) { report(event) } else { super.mouseDown(with: event) }
+		}
+
+		private func report(_ event: NSEvent) { onRightClick?(convert(event.locationInWindow, from: nil)) }
 	}
 }
 
@@ -150,6 +255,8 @@ struct MessageRow: View {
 	let message: MessageSummary
 	let isDraft: Bool
 	let isSelected: Bool
+	/// The row a right-click menu is open on, drawn as if hovered.
+	var isMenuTarget = false
 	/// In an inbox view, the account the message came from.
 	var sourceAccount: String? = nil
 	let showsDivider: Bool
@@ -210,7 +317,7 @@ struct MessageRow: View {
 		.frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
 		.background(
 			RoundedRectangle(cornerRadius: 10, style: .continuous)
-				.fill(isSelected ? AppTheme.railSelection : (isHovering ? AppTheme.rowHighlight : .clear))
+				.fill(isSelected ? AppTheme.railSelection : (isHovering || isMenuTarget ? AppTheme.rowHighlight : .clear))
 				.padding(.horizontal, 6)
 		)
 		.overlay(alignment: .topLeading) {

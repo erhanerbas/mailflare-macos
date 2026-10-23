@@ -2,11 +2,12 @@ import SwiftUI
 import Hugeicons
 
 /// Every glyph in the app comes from Hugeicons; this maps UI roles to icon assets.
-enum AppIcon {
+enum AppIcon: String {
 	case sidebar, filter, compose, reply, replyAll, forward, archive, trash, junk, folder, flag
 	case moreDown, search, allInboxes, vip, remind, drafts, sent, smartMailbox, inbox
 	case attachment, summarize, chevronRight, chevronDown, clock, close, send, add, addCircle, check, signOut, appearance, settings, info, more, bell
-	case crown, arrowLeft, sparkles, edit, colors, download, copy, label, unsubscribe, block, sourceCode, cancel, minimize, bold, italic, underline, strikethrough, bulletList, numberList, quote, link, clearFormat, undo, redo, support
+	case crown, arrowLeft, sparkles, edit, colors, download, copy, label, unsubscribe, block, sourceCode, cancel, minimize, bold, italic, underline, strikethrough, bulletList, numberList, quote, link, clearFormat, undo, redo, support, markRead, markUnread, unflag
+	case notificationOff, calendar, cart, money, person, work, travel, home, bookmark, parcel
 
 	var asset: HugeiconsAsset {
 		switch self {
@@ -71,6 +72,19 @@ enum AppIcon {
 		case .undo: Hugeicons.undo03
 		case .redo: Hugeicons.redo03
 		case .support: Hugeicons.customerSupport
+		case .markRead: Hugeicons.mailOpen01
+		case .markUnread: Hugeicons.mail01
+		case .unflag: Hugeicons.flag02
+		case .notificationOff: Hugeicons.notificationBlock01
+		case .calendar: Hugeicons.calendar01
+		case .cart: Hugeicons.shoppingCart01
+		case .money: Hugeicons.dollarCircle
+		case .person: Hugeicons.user
+		case .work: Hugeicons.briefcase01
+		case .travel: Hugeicons.airplane01
+		case .home: Hugeicons.home01
+		case .bookmark: Hugeicons.bookmark01
+		case .parcel: Hugeicons.package
 		}
 	}
 }

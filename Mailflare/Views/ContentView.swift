@@ -26,12 +26,17 @@ struct ContentView: View {
 	@State private var drawerOpen = false
 	@AppStorage("listWidth") private var listWidth: Double = 330
 	@AppStorage("sidebarWidth") private var sidebarWidth: Double = 264
+	@AppStorage(NotificationSettings.enabledKey) private var notificationsOn = true
 	@State private var listWidthAtDragStart: Double?
 	@State private var sidebarWidthAtDragStart: Double?
 	@State private var searchTask: Task<Void, Never>?
 	@FocusState private var searchFocused: Bool
 	@State private var moreOpen = false
 	@Environment(\.colorScheme) private var colorScheme
+	@AppStorage(AppAppearance.key) private var appearance = AppAppearance.system.rawValue
+
+	/// Dark Glass: the columns stay light inside the dark window.
+	private var columnScheme: ColorScheme? { (AppAppearance(rawValue: appearance) ?? .system).lightColumns ? .light : nil }
 
 	var body: some View {
 		@Bindable var store = store
@@ -55,6 +60,7 @@ struct ContentView: View {
 			if store.ai.isConfigured && layout.chatDocked {
 				// Always mounted so closing can play out: the column's width animates and clips the panel.
 				AIChatPanel()
+					.environment(\.colorScheme, columnScheme ?? colorScheme)
 					.padding(.bottom, WindowChromeMetrics.cardInset)
 					.frame(width: AIChatPanel.width + WindowChromeMetrics.cardInset, alignment: .leading)
 					.frame(width: store.chatVisible ? AIChatPanel.width + WindowChromeMetrics.cardInset : 0, alignment: .leading)
@@ -88,6 +94,9 @@ struct ContentView: View {
 	.sheet(item: $store.inboxViewEditor) { view in
 		InboxViewEditor(view: view, isNew: !store.inboxViews.contains { $0.id == view.id })
 	}
+		.sheet(item: $store.customTabEditor) { tab in
+			CustomTabEditor(tab: tab, isNew: !store.customTabs.contains { $0.id == tab.id })
+		}
 		.onChange(of: store.sidebar) { _, _ in store.sidebarChanged() }
 		.onChange(of: store.unreadOnly) { _, _ in store.reload() }
 		.onChange(of: store.searchText) { _, _ in
@@ -189,6 +198,7 @@ struct ContentView: View {
 	private var floatingChat: some View {
 		if store.ai.isConfigured && store.chatVisible && !layout.chatDocked {
 			AIChatPanel()
+				.environment(\.colorScheme, columnScheme ?? colorScheme)
 				.shadow(color: AppTheme.composerShadow, radius: 18, x: -4)
 				.padding(.top, WindowChromeMetrics.titlebarHeight)
 				.padding(.trailing, WindowChromeMetrics.cardInset)
@@ -219,6 +229,7 @@ struct ContentView: View {
 				}
 			}
 		}
+		.environment(\.colorScheme, columnScheme ?? colorScheme)
 		.background(AppTheme.background)
 		// One loader bar along the top of the card: syncing, or a message body loading.
 		.overlay(alignment: .top) {
@@ -230,10 +241,19 @@ struct ContentView: View {
 
 	// MARK: Titlebar
 
+	/// macOS has notifications off for Mailflare.
+	private var blockedBySystem: Bool { store.notifier.authorization == .denied }
+
 	private var titlebarLeading: some View {
 		HStack(spacing: 2) {
 			TitlebarIconButton(icon: .sidebar, help: "Toggle sidebar (⌃⌘S)") { toggleSidebar() }
 				.keyboardShortcut("s", modifiers: [.control, .command])
+			if blockedBySystem || !notificationsOn {
+				// macOS blocks it: only System Settings can lift that. Otherwise it is Mailflare's own switch.
+				TitlebarIconButton(icon: .notificationOff, help: "Notification is off", tint: .orange) {
+					if blockedBySystem { MailNotifier.openSystemSettings() } else { store.settingsPage = .notifications }
+				}
+			}
 			// Narrow windows show one column at a time; this goes from the message back to the list.
 			if layout.single && store.selectedID != nil && store.settingsPage == nil {
 				TitlebarIconButton(icon: .arrowLeft, help: "Back to messages") { store.select(nil) }
@@ -307,7 +327,7 @@ struct ContentView: View {
 				if !isDraft {
 					separator
 					// Only where the body has no dark styles of its own to defer to.
-					if colorScheme == .dark, let html = store.detail.flatMap({ $0.summary.id == message.id ? $0.html : nil }),
+					if colorScheme == .dark, columnScheme == nil, let html = store.detail.flatMap({ $0.summary.id == message.id ? $0.html : nil }),
 					   !MessageAppearance.supportsDark(html) {
 						TitlebarIconButton(
 							icon: .colors,

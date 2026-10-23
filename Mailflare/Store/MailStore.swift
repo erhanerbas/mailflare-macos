@@ -80,11 +80,158 @@ final class MailStore {
 
 	/// Inbox views: named sets of inboxes, across accounts, listed together. Saved on this Mac.
 	var inboxViews: [InboxView] = MailStore.loadInboxViews()
+	/// Custom tabs, listed under Today. Saved on this Mac. Today itself is `CustomTab.today`, not stored.
+	var customTabs: [CustomTab] = MailStore.loadCustomTabs()
+	/// The tab open in the create/edit popup.
+	var customTabEditor: CustomTab?
+	@ObservationIgnored private var tabCounts: [String: Int] = [:]
+	/// Goes up each time the local mail changes. The sidebar's counts read it, so every one of them is
+	/// worked out again then, whatever else they happen to read: a count with the default scope reads
+	/// nothing else that changes when a message is read.
+	private(set) var mailRevision = 0
 	/// The view whose inboxes are listed; nil lists the account in view as usual.
 	var activeViewID: String?
 	/// The view open in the create/edit popup.
 	var inboxViewEditor: InboxView?
-	var activeView: InboxView? { activeViewID.flatMap { id in inboxViews.first { $0.id == id } } }
+	var activeView: InboxView? {
+		guard let id = activeViewID else { return nil }
+		return id == Self.allAccountsID ? allAccountsView : inboxViews.first { $0.id == id }
+	}
+
+	/// A sidebar group's inbox kept apart from the dropdown's scope: the list narrows to it while the
+	/// dropdown keeps showing what it chose.
+	struct SidebarFocus: Equatable {
+		var accountID: String
+		var inboxID: String?
+	}
+	var focus: SidebarFocus?
+
+	/// One entry of the sidebar's Accounts section: an account, or one inbox of an account with several.
+	struct SidebarGroup: Identifiable {
+		var id: String
+		var title: String
+		var help: String
+		var avatarKey: String
+		var account: Account
+		var inbox: Mailbox?
+		var focus: SidebarFocus { SidebarFocus(accountID: account.id, inboxID: inbox?.id) }
+	}
+
+	/// The groups of the inboxes in view, one level deep: "Account" or "Account / Inbox".
+	var sidebarGroups: [SidebarGroup] {
+		func groups(of account: Account, wanted: Set<String>?) -> [SidebarGroup] {
+			let addresses = inboxAddresses(of: account.id)
+			guard addresses.count > 1 else {
+				return [SidebarGroup(id: account.id, title: accountName(account), help: account.email,
+									 avatarKey: AvatarCache.key(account: account.id), account: account, inbox: nil)]
+			}
+			return addresses.filter { wanted?.contains($0.id) ?? true }.map { inbox in
+				SidebarGroup(id: account.id + ":" + inbox.id, title: activeView == nil ? label(inbox) : "\(switcherName(account)) / \(label(inbox))", help: inbox.inboxEmail,
+							 avatarKey: AvatarCache.key(account: account.id, mailbox: inbox.id), account: account, inbox: inbox)
+			}
+		}
+		if let view = activeView {
+			return view.accountIDs.compactMap { id in accountList.first { $0.id == id } }.flatMap { account -> [SidebarGroup] in
+				let members = view.members.filter { $0.accountID == account.id }
+				return groups(of: account, wanted: members.contains { $0.inboxID == nil } ? nil : Set(members.compactMap(\.inboxID)))
+			}
+		}
+		return account.map { groups(of: $0, wanted: nil) } ?? []
+	}
+
+	/// The inbox a sidebar group narrows to inside the current account (no view in play).
+	var focusInbox: Mailbox? {
+		guard activeViewID == nil, let focus, focus.accountID == account?.id, let id = focus.inboxID else { return nil }
+		return inboxAddresses.first { $0.id == id }
+	}
+	/// The chosen inbox, else the one a group narrowed to.
+	var scopeInbox: Mailbox? { currentInbox ?? focusInbox }
+
+	/// The view as it is loaded: narrowed to the focused group when there is one.
+	var loadView: InboxView? {
+		guard var view = activeView else { return nil }
+		if let focus { view.members = [.init(accountID: focus.accountID, inboxID: focus.inboxID)] }
+		return view
+	}
+
+	/// Opens `item` over everything in the dropdown's scope.
+	func openTopItem(_ item: SidebarItem) {
+		focus = nil
+		settingsPage = nil
+		go(to: item)
+	}
+
+	/// Opens `item` in one sidebar group, leaving the dropdown as it is.
+	func openGroupItem(_ item: SidebarItem, in group: SidebarGroup) {
+		focus = group.focus
+		settingsPage = nil
+		go(to: item)
+	}
+
+	private func go(to item: SidebarItem) {
+		let changed = sidebar != item
+		sidebar = item
+		searchText = ""
+		selectedID = nil; detail = nil
+		pageLimit = pageSize
+		if !changed { reload() }
+	}
+
+	/// Whether the single-inbox sidebar is in play: one inbox, not several combined.
+	var isSingleScope: Bool { !showsAllInboxes }
+
+	/// The folders and labels of the one inbox in view.
+	var scopeFolders: [Mailbox] {
+		if let inbox = currentInbox { return children(of: inbox).filter { $0.role == nil } }
+		if inboxAddresses.isEmpty { return plainFolders }
+		if inboxAddresses.count == 1 { return children(of: inboxAddresses[0]).filter { $0.role == nil } }
+		return []
+	}
+
+	/// The unified scope: every inbox of every account, as a view that is never saved.
+	static let allAccountsID = "all-accounts"
+	var allAccountsView: InboxView {
+		InboxView(id: Self.allAccountsID, name: "Unified Inbox", members: accountList.filter { unifiedIncludes($0.id) }.map { .init(accountID: $0.id, inboxID: nil) })
+	}
+
+	// MARK: Unified settings
+
+	var unifiedExcluded: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "unifiedExcludedAccounts") ?? [])
+
+	var unifiedHidden: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "unifiedHiddenViews") ?? [])
+	func unifiedShows(_ kind: UnifiedViewKind) -> Bool { !unifiedHidden.contains(kind.rawValue) }
+	func setUnified(_ kind: UnifiedViewKind, shown: Bool) {
+		if shown { unifiedHidden.remove(kind.rawValue) } else { unifiedHidden.insert(kind.rawValue) }
+		UserDefaults.standard.set(Array(unifiedHidden), forKey: "unifiedHiddenViews")
+	}
+
+	/// The Organize setting a sidebar key belongs to; custom folders have none.
+	static func viewKind(forKey key: String) -> UnifiedViewKind? {
+		switch key {
+		case "inbox": .inbox
+		case "flagged": .starred
+		case "drafts": .drafts
+		case "sent": .sent
+		case "junk": .spam
+		case "trash": .trash
+		case "archive": .archive
+		default: nil
+		}
+	}
+
+	/// Whether Organize lists the sidebar key at the top level; the rest live in the account's More.
+	func isListed(_ key: String) -> Bool { Self.viewKind(forKey: key).map(unifiedShows) ?? true }
+
+	func unifiedIncludes(_ accountID: String) -> Bool { !unifiedExcluded.contains(accountID) }
+	var unifiedIncludedCount: Int { accountList.filter { unifiedIncludes($0.id) }.count }
+
+
+	func setUnified(_ accountID: String, included: Bool) {
+		if included { unifiedExcluded.remove(accountID) } else { unifiedExcluded.insert(accountID) }
+		UserDefaults.standard.set(Array(unifiedExcluded), forKey: "unifiedExcludedAccounts")
+		if isAllAccounts { pageLimit = pageSize; reload() }
+	}
+	var isAllAccounts: Bool { activeViewID == Self.allAccountsID }
 
 	var vips: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "vips") ?? [])
 	var reminders: [String: Date] = {
@@ -93,6 +240,8 @@ final class MailStore {
 
 	@ObservationIgnored private var detailTask: Task<Void, Never>?
 	@ObservationIgnored private var pollTask: Task<Void, Never>?
+	/// Held while polling so App Nap does not stretch the poll interval of a hidden window.
+	@ObservationIgnored private var pollActivity: NSObjectProtocol?
 	@ObservationIgnored private var olderTask: Task<Void, Never>?
 	@ObservationIgnored private var pageLimit = 50
 	private let pageSize = 50
@@ -211,6 +360,7 @@ final class MailStore {
 		accountList = (try? core?.accounts()) ?? [account]
 		showAddAccount = false
 		activeViewID = nil
+		focus = nil
 		banner = nil
 		connectionNote = nil
 		phase = .ready
@@ -230,7 +380,7 @@ final class MailStore {
 
 	func switchAccount(_ target: Account) {
 		guard target.id != account?.id else { return }
-		pollTask?.cancel()
+		stopPolling()
 		reloadScratch()
 		activate(target)
 	}
@@ -252,7 +402,7 @@ final class MailStore {
 	}
 
 	func signOut(notice: String? = nil) {
-		pollTask?.cancel()
+		stopPolling()
 		if let id = account?.id { try? core?.signOut(accountId: id); profiles.forget(id) }
 		account = nil; mailboxes = []; identities = []; messages = []; detail = nil; selectedID = nil
 		compose = nil; minimizedDraft = nil; searchText = ""; settingsPage = nil
@@ -323,12 +473,86 @@ final class MailStore {
 	func deleteInboxView(_ id: String) {
 		inboxViews.removeAll { $0.id == id }
 		persistInboxViews()
-		if activeViewID == id { activeViewID = nil; selectedID = nil; detail = nil; pageLimit = pageSize; reload() }
+		if activeViewID == id { activeViewID = nil; focus = nil; selectedID = nil; detail = nil; pageLimit = pageSize; reload() }
+	}
+
+	// MARK: Custom tabs
+
+	private static func loadCustomTabs() -> [CustomTab] {
+		guard let data = UserDefaults.standard.data(forKey: "customTabs") else { return [] }
+		return (try? JSONDecoder().decode([CustomTab].self, from: data)) ?? []
+	}
+
+	private func persistCustomTabs() {
+		UserDefaults.standard.set(try? JSONEncoder().encode(customTabs), forKey: "customTabs")
+		tabCounts.removeAll()
+	}
+
+	/// Today, or the custom tab with this id.
+	func customTab(_ id: String) -> CustomTab? {
+		id == CustomTab.today.id ? CustomTab.today : customTabs.first { $0.id == id }
+	}
+
+	func saveCustomTab(_ tab: CustomTab) {
+		var tab = tab
+		tab.name = tab.name.trimmingCharacters(in: .whitespaces)
+		if let index = customTabs.firstIndex(where: { $0.id == tab.id }) { customTabs[index] = tab } else { customTabs.append(tab) }
+		persistCustomTabs()
+		if sidebar == .customTab(tab.id) { pageLimit = pageSize; reload() }
+	}
+
+	func deleteCustomTab(_ id: String) {
+		customTabs.removeAll { $0.id == id }
+		persistCustomTabs()
+		if sidebar == .customTab(id) { sidebar = .allInboxes; selectedID = nil; detail = nil }
+	}
+
+	/// The Inbox mail of the scope the dropdown chose (the account in view, one of its inboxes, or an
+	/// inbox view), as far back as the local store is read for derived lists.
+	private func scopeInboxMessages() -> [MessageSummary] {
+		if let view = activeView {
+			var list: [MessageSummary] = []
+			for account in view.accountIDs where accountList.contains(where: { $0.id == account }) {
+				for box in mailboxes(of: account) where box.role == "inbox" && Self.isMember(box, of: account, in: view) {
+					list += (try? fetch(account, .mailbox(id: box.id), limit: scanLimit).list) ?? []
+				}
+			}
+			return list
+		}
+		let folder: Folder = currentInbox
+			.flatMap { inbox in mailboxes.first { $0.parentId == inbox.id && $0.role == "inbox" } }
+			.map { .mailbox(id: $0.id) } ?? .role(role: "inbox")
+		return (try? fetch(accountID, folder, limit: scanLimit).list) ?? []
+	}
+
+	/// Unread mail a tab lists, over the scope the dropdown chose: the number on its sidebar row.
+	func unreadCount(of tab: CustomTab) -> Int {
+		_ = mailRevision
+		let day = Calendar.current.startOfDay(for: .now).timeIntervalSince1970
+		let key = "\(activeViewID ?? "-")|\(scopeID ?? "-")|\(accountID)|\(tab.id)|\(tab.hashValue)|\(day)"
+		if let hit = tabCounts[key] { return hit }
+		let now = Date.now
+		let count = scopeInboxMessages().filter { !$0.seen && tab.matches($0, now: now) }.count
+		tabCounts[key] = count
+		return count
+	}
+
+	/// How much of the current Inbox a tab being edited would list right now.
+	func preview(of tab: CustomTab) -> (total: Int, unread: Int) {
+		let now = Date.now
+		let matching = scopeInboxMessages().filter { tab.matches($0, now: now) }
+		return (matching.count, matching.filter { !$0.seen }.count)
+	}
+
+	/// Whether `box` of `account` is inside one of the view's inboxes.
+	private static func isMember(_ box: Mailbox, of account: String, in view: InboxView) -> Bool {
+		view.members.contains { $0.accountID == account && ($0.inboxID == nil || box.parentId == $0.inboxID) }
 	}
 
 	func selectView(_ id: String) {
 		guard inboxViews.contains(where: { $0.id == id }) else { return }
 		activeViewID = id
+		focus = nil
 		settingsPage = nil
 		sidebar = .allInboxes
 		searchText = ""
@@ -336,6 +560,50 @@ final class MailStore {
 		pageLimit = pageSize
 		reload()
 	}
+
+	/// Opens `item` across every account (the sidebar's Unified section and the switcher's Unified Inbox).
+	func selectAllAccounts(_ item: SidebarItem = .allInboxes) {
+		activeViewID = Self.allAccountsID
+		focus = nil
+		settingsPage = nil
+		sidebar = item
+		searchText = ""
+		selectedID = nil; detail = nil
+		pageLimit = pageSize
+		reload()
+	}
+
+	/// Opens `item` in one account (all of its inboxes), switching to the account first when needed.
+	func openAccountItem(_ item: SidebarItem, accountID: String, inbox: Mailbox? = nil) {
+		settingsPage = nil
+		if accountID != account?.id, let target = accountList.first(where: { $0.id == accountID }) { switchAccount(target) }
+		setScope(inbox?.id)
+		sidebar = item
+		searchText = ""
+		selectedID = nil; detail = nil
+		pageLimit = pageSize
+		reload()
+	}
+
+	/// Custom folders and labels of an account, for the sidebar's Accounts section.
+	func customFolders(of accountID: String, inbox: Mailbox? = nil) -> [Mailbox] {
+		let boxes = mailboxes(of: accountID)
+		if let inbox {
+			return boxes.filter { $0.parentId == inbox.id && $0.role == nil && !$0.name.hasPrefix("[") }
+				.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+		}
+		let addresses = Set(Self.addressMailboxes(in: boxes).map(\.id))
+		return boxes.filter { $0.role == nil && !addresses.contains($0.id) && !$0.name.hasPrefix("[") }
+			.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+	}
+
+	/// The system mailbox with `role` in an account, when it has one.
+	func hasRole(_ role: String, accountID: String, inbox: Mailbox? = nil) -> Bool {
+		mailboxes(of: accountID).contains { $0.role == role && (inbox == nil || $0.parentId == inbox?.id) }
+	}
+
+	/// Unread inbox mail in every account.
+	var unreadAllAccounts: Int { accountList.filter { unifiedIncludes($0.id) }.reduce(0) { $0 + unreadCount(accountID: $1.id, inbox: nil) } }
 
 	/// Unread inbox mail across the view's inboxes.
 	func unreadCount(of view: InboxView) -> Int {
@@ -353,8 +621,11 @@ final class MailStore {
 		let id = accountID
 		if quick { quietSyncs.insert(id) }
 		Task {
+			// A failed IMAP quick sync sends no `syncFinished` to clear it.
+			defer { if quick { quietSyncs.remove(id) } }
 			do {
 				if quick { try await core.syncQuick(accountId: id) } else { try await core.sync(accountId: id) }
+				if quick { quickSyncEnded(id) }
 				connectionNote = nil
 			} catch let error as CoreError {
 				guard account?.id == id else { return }
@@ -374,7 +645,7 @@ final class MailStore {
 	/// Back to the sign-in screen without discarding anything cached: signing in again to the
 	/// same account replaces its key and the saved mail is still there.
 	private func endSession(_ notice: String) {
-		pollTask?.cancel()
+		stopPolling()
 		account = nil; mailboxes = []; identities = []; messages = []; detail = nil; selectedID = nil
 		connectionNote = nil; isSyncing = false
 		phase = .signedOut
@@ -383,12 +654,24 @@ final class MailStore {
 
 	private func startPolling() {
 		pollTask?.cancel()
+		// Without this a hidden or occluded window is napped and the minute between polls can
+		// stretch to many, so new mail would be announced late. Idle system sleep is still allowed.
+		if pollActivity == nil {
+			pollActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Checking for new mail")
+		}
 		pollTask = Task { [weak self] in
 			while !Task.isCancelled {
 				try? await Task.sleep(for: .seconds(60))
 				self?.pollAll()
 			}
 		}
+	}
+
+	private func stopPolling() {
+		pollTask?.cancel()
+		pollTask = nil
+		if let pollActivity { ProcessInfo.processInfo.endActivity(pollActivity) }
+		pollActivity = nil
 	}
 
 	/// A quick sync of the account in view and of every other saved account, so mail for any of
@@ -400,13 +683,28 @@ final class MailStore {
 		for other in accountList where other.id != current && KeychainCredentialStore().load(accountId: other.id) != nil {
 			let id = other.id
 			quietSyncs.insert(id)
-			Task { try? await core.syncQuick(accountId: id) }
+			Task {
+				try? await core.syncQuick(accountId: id)
+				quickSyncEnded(id)
+			}
 		}
 	}
 
-	/// Hands an account's inbox to the notifier and refreshes the Dock badge.
+	/// An IMAP quick sync reads only the inboxes and sends no `syncFinished`, so its new mail and
+	/// unread counts are picked up here. After a JMAP sync this repeats `syncFinished`'s check, which
+	/// announces nothing twice.
+	private func quickSyncEnded(_ id: String) {
+		quietSyncs.remove(id)
+		invalidateCaches()
+		if id == account?.id { refreshMailboxes(); reload() }
+		checkNewMail(accountID: id)
+	}
+
+	/// Hands an account's inbox, across all of its addresses, to the notifier and refreshes the Dock badge.
 	private func checkNewMail(accountID id: String) {
 		guard let core, let account = accountList.first(where: { $0.id == id }) else { return }
+		// Never synced yet: its first look must come after the first sync, or that sync's mail is announced.
+		guard mailboxes(of: id).contains(where: { $0.role == "inbox" }) else { updateBadge(); return }
 		let inbox = (try? core.messages(accountId: id, folder: .role(role: "inbox"), offset: 0, limit: 50)) ?? []
 		notifier.process(accountID: id, inbox: inbox, accountLabel: accountList.count > 1 ? accountName(account) : nil)
 		updateBadge()
@@ -524,6 +822,12 @@ final class MailStore {
 		return host.contains("gmail.com") || host.contains("googlemail.com") || domain == "gmail.com" || domain == "googlemail.com"
 	}
 
+	func isGmailAccount(_ account: Account) -> Bool {
+		let host = account.serverUrl.lowercased()
+		let domain = account.email.split(separator: "@").last.map { $0.lowercased() } ?? ""
+		return host.contains("gmail.com") || host.contains("googlemail.com") || domain == "gmail.com" || domain == "googlemail.com"
+	}
+
 	/// The Gmail labels not already in Favorites.
 	var labelKeys: [String] {
 		guard isGmail else { return [] }
@@ -624,12 +928,13 @@ final class MailStore {
 		if let inbox = currentInbox { return label(inbox) }
 		if inboxAddresses.count == 1 { return label(inboxAddresses[0]) }
 		if inboxAddresses.isEmpty, let account { return accountName(account) }
-		return "All Inboxes"
+		return account.map(switcherName) ?? "Inboxes"
 	}
 
 	func setScope(_ id: String?) {
 		scopeID = id
 		activeViewID = nil
+		focus = nil
 		if let id { UserDefaults.standard.set(id, forKey: "scopeInbox") } else { UserDefaults.standard.removeObject(forKey: "scopeInbox") }
 		if case .mailbox = sidebar { sidebar = .allInboxes }
 		pageLimit = pageSize
@@ -639,13 +944,13 @@ final class MailStore {
 
 	/// Whether a message belongs to the chosen inbox (always true when scoped to all).
 	private func inScope(_ m: MessageSummary) -> Bool {
-		guard let scope = scopeID else { return true }
+		guard let scope = scopeInbox?.id else { return true }
 		return mailbox(m.mailboxId)?.parentId == scope
 	}
 
 	/// A system folder within the chosen inbox, or across all inboxes.
 	private func scopedFolder(_ role: String) -> Folder {
-		if let inbox = currentInbox, let leaf = mailboxes.first(where: { $0.parentId == inbox.id && $0.role == role }) {
+		if let inbox = scopeInbox, let leaf = mailboxes.first(where: { $0.parentId == inbox.id && $0.role == role }) {
 			return .mailbox(id: leaf.id)
 		}
 		return .role(role: role)
@@ -661,6 +966,7 @@ final class MailStore {
 
 	/// Unread in an address's inbox, or across all of an account's inboxes when `inbox` is nil.
 	func unreadCount(accountID: String, inbox: Mailbox?) -> Int {
+		_ = mailRevision
 		guard let core else { return 0 }
 		return mailboxes(of: accountID).filter { $0.role == "inbox" && (inbox == nil || $0.parentId == inbox?.id) }.reduce(0) { $0 + Int($1.unreadEmails) }
 	}
@@ -695,6 +1001,17 @@ final class MailStore {
 		if let own = profiles.localName(account.id) { return own }
 		guard account.displayName.contains("@") else { return account.displayName }
 		return knownNames[account.email.lowercased()] ?? account.shownName
+	}
+
+	/// An account's name in the switcher. An account with several inboxes keeps a name set here or by
+	/// the server; otherwise it takes its primary inbox's (the first), which carries the name the
+	/// mailbox was given ("Full Name <me@x.com>"). That comes before a name learned from sent mail,
+	/// which can be just the part of the address before the @.
+	func switcherName(_ account: Account) -> String {
+		let inboxes = inboxAddresses(of: account.id)
+		guard let primary = inboxes.first, inboxes.count > 1 else { return accountName(account) }
+		if profiles.localName(account.id) != nil || !account.displayName.contains("@") { return accountName(account) }
+		return label(primary)
 	}
 
 	/// Learns names from the Sent folder: each of the user's own addresses is paired with the display
@@ -799,11 +1116,23 @@ final class MailStore {
 		case .allInboxes: activeView.map(unreadCount(of:)) ?? inboxUnread
 		case .flagged: activeViewID == nil ? flaggedCount : 0
 		case .mailbox(let id): mailbox(id).map { $0.role == "drafts" ? 0 : Int($0.unreadEmails) } ?? 0
+		case .smartToday: unreadCount(of: .today)
+		case .customTab(let id): customTab(id).map(unreadCount(of:)) ?? 0
 		default: 0
 		}
 	}
 
+	/// What a sidebar group narrowed the list to: its inbox, or inside a view, its account and inbox.
+	private var focusLabel: String? {
+		guard let focus, let owner = accountList.first(where: { $0.id == focus.accountID }) else { return nil }
+		if let id = focus.inboxID, let inbox = inboxAddresses(of: owner.id).first(where: { $0.id == id }) {
+			return activeView == nil ? label(inbox) : "\(switcherName(owner)) / \(label(inbox))"
+		}
+		return activeView == nil ? nil : accountName(owner)
+	}
+
 	private func scopedTitle(_ base: String, all: String) -> String {
+		if let focusLabel { return "\(base) — \(focusLabel)" }
 		if showsAllInboxes { return all }
 		return currentInbox.map { "\(base) — \(label($0))" } ?? base
 	}
@@ -816,28 +1145,32 @@ final class MailStore {
 			case .allJunk: "Spam"
 			case .allTrash: "Trash"
 			case .allArchive: "Archive"
-			case .flagged: "Flagged"
+			case .flagged: "Starred"
 			case .smartToday: "Today"
 			case .mailbox(let id): mailbox(id)?.name
-			case .allInboxes, .vips, .remindMe: nil
+			case .allInboxes: focus == nil ? nil : "Inbox"
+			case .customTab(let id): customTab(id)?.name
+			case .vips, .remindMe: nil
 			}
-			return base.map { "\($0) — \(view.name)" } ?? view.name
+			let scope = focusLabel ?? view.name
+			return base.map { "\($0) — \(scope)" } ?? scope
 		}
 		switch sidebar {
 		case .mailbox(let id):
 			guard let box = mailbox(id) else { return "Mailflare" }
 			let parent = box.parentId.flatMap(mailbox)?.name ?? ""
 			return parent.isEmpty ? box.name : "\(box.name) — \(parent)"
-		case .allInboxes: return scopedTitle("Inbox", all: "All Inboxes")
+		case .allInboxes: return scopedTitle("Inbox", all: "Inboxes")
 		case .vips: return "VIPs"
-		case .flagged: return "Flagged"
+		case .flagged: return focusLabel.map { "Starred — \($0)" } ?? "Starred"
 		case .remindMe: return "Remind Me"
-		case .allDrafts: return scopedTitle("Drafts", all: "All Drafts")
-		case .allSent: return scopedTitle("Sent", all: "All Sent")
-		case .allJunk: return scopedTitle("Spam", all: "All Spam")
-		case .allTrash: return scopedTitle("Trash", all: "All Trash")
-		case .allArchive: return scopedTitle("Archive", all: "All Archive")
+		case .allDrafts: return scopedTitle("Drafts", all: "Drafts")
+		case .allSent: return scopedTitle("Sent", all: "Sent")
+		case .allJunk: return scopedTitle("Spam", all: "Spam")
+		case .allTrash: return scopedTitle("Trash", all: "Trash")
+		case .allArchive: return scopedTitle("Archive", all: "Archive")
 		case .smartToday: return "Today"
+		case .customTab(let id): return customTab(id)?.name ?? "Mailflare"
 		}
 	}
 
@@ -854,9 +1187,9 @@ final class MailStore {
 		case .allJunk: scopedFolder("junk")
 		case .allTrash: scopedFolder("trash")
 		case .allArchive: scopedFolder("archive")
-		case .flagged: scopeID == nil ? .starred : nil
+		case .flagged: scopeInbox == nil ? .starred : nil
 		case .mailbox(let id): .mailbox(id: id)
-		case .vips, .remindMe, .smartToday: nil
+		case .vips, .remindMe, .smartToday, .customTab: nil
 		}
 	}
 
@@ -872,7 +1205,8 @@ final class MailStore {
 		case .mailbox(let id): m.mailboxId == id
 		case .vips: vips.contains(m.fromEmail.lowercased()) && inScope(m)
 		case .remindMe: reminders[m.id] != nil && inScope(m)
-		case .smartToday: Calendar.current.isDateInToday(m.date) && inScope(m)
+		case .smartToday: role(of: m) == "inbox" && CustomTab.today.matches(m) && inScope(m)
+		case .customTab(let id): role(of: m) == "inbox" && inScope(m) && (customTab(id)?.matches(m) ?? false)
 		}
 	}
 
@@ -902,22 +1236,51 @@ final class MailStore {
 			return
 		}
 		if unreadOnly { list = list.filter { !$0.seen } }
+		list = keepingOpened(list)
 		messages = list
 		total = count ?? list.count
+	}
+
+	// MARK: Opened mail stays listed
+
+	/// Unread mail opened from the list, as it was listed (unread), by the id it is listed under.
+	@ObservationIgnored private var opened: [String: MessageSummary] = [:]
+	@ObservationIgnored private var openedContext = ""
+
+	/// What the list is of: the same context keeps the opened mail, any other forgets it.
+	private var listContext: String {
+		"\(sidebar)|\(activeViewID ?? "")|\(scopeID ?? "")|\(String(describing: focus))|\(account?.id ?? "")|\(searchText)|\(unreadOnly)"
+	}
+
+	/// A list of unread mail (Today, a tab with an unread rule, the unread filter) would lose a message
+	/// the moment it is read, and the reader with it. So mail opened from the list stays in it, as it
+	/// was, until the list is of something else or is opened again. Mail that left for another reason
+	/// (moved, archived, deleted) stays gone.
+	private func keepingOpened(_ list: [MessageSummary]) -> [MessageSummary] {
+		let context = listContext
+		if context != openedContext { opened.removeAll(); openedContext = context }
+		guard !opened.isEmpty, let core else { return list }
+		var list = list
+		let listed = Set(list.map(\.id))
+		for (id, old) in opened {
+			let (account, raw) = owner(of: id)
+			guard !listed.contains(id), let now = try? core.messageSummary(accountId: account, messageId: raw),
+				  now.seen, now.mailboxId == old.mailboxId else { opened[id] = nil; continue }
+			list.insert(old, at: list.firstIndex { $0.receivedAt < old.receivedAt } ?? list.count)
+		}
+		return list
 	}
 
 	/// The view lists what "All Inboxes" does, across its inboxes: the same sidebar item, read from
 	/// each account's local store through the shared list cache, merged newest first. Each message id
 	/// carries its account (`ViewMessageID`).
 	private func reloadView() {
-		guard let view = activeView else { return }
+		guard let view = loadView else { return }
 		let q = searchText.trimmingCharacters(in: .whitespaces)
 		let item = sidebar
 
 		/// Whether `box` of `account` is inside one of the view's inboxes.
-		func inView(_ account: String, _ box: Mailbox) -> Bool {
-			view.members.contains { $0.accountID == account && ($0.inboxID == nil || box.parentId == $0.inboxID) }
-		}
+		func inView(_ account: String, _ box: Mailbox) -> Bool { Self.isMember(box, of: account, in: view) }
 		func matches(_ account: String, _ m: MessageSummary) -> Bool {
 			guard let box = mailboxes(of: account).first(where: { $0.id == m.mailboxId }), inView(account, box) else { return false }
 			switch item {
@@ -928,7 +1291,8 @@ final class MailStore {
 			case .allTrash: return box.role == "trash"
 			case .allArchive: return box.role == "archive"
 			case .flagged: return m.flagged
-			case .smartToday: return box.role == "inbox" && Calendar.current.isDateInToday(m.date)
+			case .smartToday: return box.role == "inbox" && CustomTab.today.matches(m)
+			case .customTab(let id): return box.role == "inbox" && (customTab(id)?.matches(m) ?? false)
 			case .mailbox(let id): return ViewMessageID.split(id).message == m.mailboxId
 			case .vips, .remindMe: return false
 			}
@@ -949,7 +1313,7 @@ final class MailStore {
 		for account in view.accountIDs where accountList.contains(where: { $0.id == account }) {
 			switch item {
 			case .flagged: scanned.append((account, .starred))
-			case .smartToday, .vips, .remindMe:
+			case .smartToday, .customTab, .vips, .remindMe:
 				for box in mailboxes(of: account) where box.role == "inbox" && inView(account, box) { scanned.append((account, .mailbox(id: box.id))) }
 			case .mailbox(let id):
 				let parts = ViewMessageID.split(id)
@@ -984,6 +1348,7 @@ final class MailStore {
 		if unreadOnly { list = list.filter { !$0.seen } }
 		list.sort { $0.receivedAt > $1.receivedAt }
 		if !filtered { list = Array(list.prefix(pageLimit)) }
+		list = keepingOpened(list)
 		messages = list
 		total = filtered ? list.count : count
 	}
@@ -1003,6 +1368,8 @@ final class MailStore {
 	@ObservationIgnored private var mailboxCache: [String: [Mailbox]] = [:]
 
 	private func invalidateCaches() {
+		mailRevision += 1
+		tabCounts.removeAll()
 		listCache.removeAll()
 		mailboxCache.removeAll()
 	}
@@ -1089,7 +1456,11 @@ final class MailStore {
 		detailTask?.cancel()
 		markReadTask?.cancel()
 		guard let id, let core else { return }
-		if let m = messages.first(where: { $0.id == id }), !m.seen { scheduleMarkRead(id) }
+		if let m = messages.first(where: { $0.id == id }), !m.seen {
+			if openedContext != listContext { opened.removeAll(); openedContext = listContext }
+			opened[id] = m
+			scheduleMarkRead(id)
+		}
 		let (acct, raw) = owner(of: id)
 		if let cached = try? core.cachedMessage(accountId: acct, messageId: raw) { detail = Self.tagged(cached, id: id); return }
 		detailTask = Task { [weak self] in

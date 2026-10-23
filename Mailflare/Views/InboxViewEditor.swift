@@ -34,15 +34,7 @@ struct InboxViewEditor: View {
 	}
 
 	var body: some View {
-		VStack(spacing: 0) {
-			HStack {
-				Text(isNew ? "New Inbox View" : "Edit Inbox View")
-					.font(Typography.bodySemibold).frame(maxWidth: .infinity, alignment: .leading)
-				TitlebarIconButton(icon: .cancel, help: "Close") { dismiss() }
-			}
-			.padding(.horizontal, 12).padding(.leading, 4).padding(.vertical, 10)
-			Rectangle().fill(AppTheme.cardStroke).frame(height: 1).padding(.horizontal, 16)
-
+		ModalScaffold(title: isNew ? "New Inbox View" : "Edit Inbox View") {
 			VStack(alignment: .leading, spacing: 14) {
 				VStack(alignment: .leading, spacing: 6) {
 					Text("Inbox name").font(Typography.meta.weight(.medium)).foregroundStyle(.secondary)
@@ -53,30 +45,25 @@ struct InboxViewEditor: View {
 				}
 				VStack(alignment: .leading, spacing: 6) {
 					Text("Show mail from").font(Typography.meta.weight(.medium)).foregroundStyle(.secondary)
-					ScrollView {
-						VStack(alignment: .leading, spacing: 2) {
-							ForEach(choices) { choice in accountRows(choice) }
-						}
-						.padding(6)
+					VStack(alignment: .leading, spacing: 2) {
+						ForEach(choices) { choice in accountRows(choice) }
 					}
-					.frame(height: 250)
+					.padding(6)
 					.background(AppTheme.composerContextFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 				}
-				HStack(spacing: 8) {
-					if !isNew {
-						Button("Delete") { store.deleteInboxView(view.id); dismiss() }
-							.buttonStyle(.pill).foregroundStyle(.red)
-					}
-					Spacer()
-					Button("Cancel") { dismiss() }.buttonStyle(.pill).keyboardShortcut(.cancelAction)
-					Button(isNew ? "Create" : "Save") { save() }
-						.buttonStyle(.pillProminent).disabled(!canSave).keyboardShortcut(.defaultAction)
-				}
 			}
-			.padding(16)
+		} footer: {
+			HStack(spacing: 8) {
+				if !isNew {
+					Button("Delete") { store.deleteInboxView(view.id); dismiss() }
+						.buttonStyle(.pill).foregroundStyle(.red)
+				}
+				Spacer()
+				Button("Cancel") { dismiss() }.buttonStyle(.pill).keyboardShortcut(.cancelAction)
+				Button(isNew ? "Create" : "Save") { save() }
+					.buttonStyle(.pillProminent).disabled(!canSave).keyboardShortcut(.defaultAction)
+			}
 		}
-		.frame(width: 420)
-		.background(AppTheme.background)
 		.onAppear { nameFocused = true }
 	}
 

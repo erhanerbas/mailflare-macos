@@ -21,6 +21,16 @@ enum NotificationSettings {
 final class MailNotifier: NSObject, UNUserNotificationCenterDelegate {
 	private(set) var authorization: UNAuthorizationStatus = .notDetermined
 
+	/// Accounts whose new mail is not announced. Everything notifies unless listed here.
+	private(set) var mutedAccounts = Set(UserDefaults.standard.stringArray(forKey: "notificationMutedAccounts") ?? [])
+
+	func notifies(_ accountID: String) -> Bool { !mutedAccounts.contains(accountID) }
+
+	func setNotifies(_ on: Bool, accountID: String) {
+		if on { mutedAccounts.remove(accountID) } else { mutedAccounts.insert(accountID) }
+		UserDefaults.standard.set(Array(mutedAccounts), forKey: "notificationMutedAccounts")
+	}
+
 	/// Called with the account and message ids when a notification is clicked.
 	@ObservationIgnored var open: (String, String) -> Void = { _, _ in }
 	@ObservationIgnored private var known: [String: Set<String>] = [:]
@@ -33,9 +43,25 @@ final class MailNotifier: NSObject, UNUserNotificationCenterDelegate {
 	override init() {
 		super.init()
 		center.delegate = self
+		// The permission is changed in System Settings, so look again whenever the app comes back.
+		NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+			Task { @MainActor in await self?.refreshAuthorization() }
+		}
 	}
 
-	private var canPost: Bool { authorization == .authorized || authorization == .provisional }
+	private var canPost: Bool { isAllowed }
+
+	/// Whether macOS lets Mailflare post notifications (System Settings → Notifications).
+	var isAllowed: Bool { authorization == .authorized || authorization == .provisional }
+
+	/// Mailflare's page in System Settings → Notifications. An app can ask for permission only once;
+	/// after that, turning it on or off there is the user's to do.
+	static func openSystemSettings() {
+		let id = Bundle.main.bundleIdentifier ?? ""
+		for string in ["x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)", "x-apple.systempreferences:com.apple.Notifications-Settings.extension"] {
+			if let url = URL(string: string), NSWorkspace.shared.open(url) { return }
+		}
+	}
 
 	// MARK: Permission
 
@@ -62,7 +88,8 @@ final class MailNotifier: NSObject, UNUserNotificationCenterDelegate {
 		let ids = Set(inbox.map(\.id))
 		guard let previous = known[accountID] else { known[accountID] = ids; return }
 		known[accountID] = ids
-		guard NotificationSettings.flag(NotificationSettings.enabledKey), canPost else { return }
+		// The inbox was recorded above either way, so unmuting later announces only mail that arrives after.
+		guard NotificationSettings.flag(NotificationSettings.enabledKey), canPost, notifies(accountID) else { return }
 		let cutoff = Date().addingTimeInterval(-Self.freshness)
 		let fresh = inbox.filter { !previous.contains($0.id) && !$0.seen && $0.date > cutoff }
 		guard !fresh.isEmpty else { return }
@@ -105,8 +132,11 @@ final class MailNotifier: NSObject, UNUserNotificationCenterDelegate {
 
 	// MARK: Delegate
 
-	/// With the app in front the list already shows the new mail, so nothing pops up.
-	nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions { [] }
+	/// New mail is announced with the app in front too: the window may be on another Space, behind
+	/// other windows or showing a different mailbox. The sound follows the content's own setting.
+	nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+		[.banner, .list, .sound]
+	}
 
 	nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
 		let info = response.notification.request.content.userInfo

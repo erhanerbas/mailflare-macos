@@ -5,6 +5,8 @@ enum SidebarItem: Hashable {
 	case allInboxes, vips, flagged, remindMe, allDrafts, allSent
 	case allJunk, allTrash, allArchive
 	case smartToday
+	/// A tab the user made, by its id (see `CustomTab`).
+	case customTab(String)
 	case mailbox(String)
 }
 
