@@ -6,7 +6,10 @@ struct ReaderView: View {
 	@Environment(MailStore.self) private var store
 
 	var body: some View {
-		if let message = store.selectedMessage {
+		if store.multiSelection.count > 1 {
+			EmptyStateView(icon: .inbox, title: "\(store.multiSelection.count) Messages Selected", message: "Right-click to archive, flag or delete them together.")
+				.background(AppTheme.background)
+		} else if let message = store.selectedMessage {
 			MessageDetail(message: message).id(message.id)
 		} else {
 			EmptyStateView(icon: .inbox, title: "No Message Selected")
@@ -54,6 +57,17 @@ private struct MessageDetail: View {
 	private var allowsRemote: Bool { (loadRemoteContent && !isJunk) || loadRemoteOnce }
 
 	var body: some View {
+		VStack(spacing: 0) {
+			content
+			// Held below the message as it scrolls; a draft is edited, not replied to.
+			if store.role(of: message) != "drafts" { QuickReplyBox(message: message) }
+		}
+		.background(AppTheme.background)
+		.task { store.loadSavedSummary(for: message.id) }
+		.onChange(of: adaptByDefault) { _, _ in store.refreshAdaptColors() }
+	}
+
+	private var content: some View {
 		ScrollView {
 			VStack(alignment: .leading, spacing: 0) {
 				VStack(alignment: .leading, spacing: 12) {
@@ -94,9 +108,6 @@ private struct MessageDetail: View {
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
 		}
-		.background(AppTheme.background)
-		.task { store.loadSavedSummary(for: message.id) }
-		.onChange(of: adaptByDefault) { _, _ in store.refreshAdaptColors() }
 	}
 
 	/// Stands in for the message while its body loads: four lines of text.
@@ -126,7 +137,7 @@ private struct MessageDetail: View {
 		VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
 				HIcon(.aiContent, size: 13)
-				Text("Summarised").font(Typography.meta.weight(.medium))
+				Text("Summary").font(Typography.meta.weight(.medium))
 			}
 			.foregroundStyle(.secondary)
 			Text(text).font(Typography.body).textSelection(.enabled)

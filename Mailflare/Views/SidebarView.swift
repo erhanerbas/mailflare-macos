@@ -408,7 +408,15 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 			if !collapsed(id) { offRows(group: nil) }
 		}
 		let canCreate = store.account.map { store.canCreateFolders(accountID: $0.id) } ?? false
-		if !folders.isEmpty || canCreate {
+		if folders.isEmpty && canCreate {
+			// Nothing to list yet: a button stands in for the section until one is made.
+			let noun = store.isGmail ? "Label" : "Folder"
+			SidebarRow(icon: .add, title: "Add \(noun)", badge: 0, tint: nil, isSelected: false) {
+				guard let account = store.account else { return }
+				store.folderRequest = .init(accountID: account.id, kind: .create(parentID: (store.scopeInbox ?? store.inboxAddresses.first)?.id))
+			}
+			.padding(.top, 10)
+		} else if !folders.isEmpty {
 			let subID = "open:inbox-folders"
 			let open = store.collapsedSections.contains(subID)
 			let noun = store.isGmail ? "Label" : "Folder"
@@ -443,7 +451,12 @@ private func actionRow(_ icon: AppIcon, _ title: String, action: @escaping () ->
 					offRows(group: group)
 					let folders = store.customFolders(of: group.account.id, inbox: group.inbox)
 					let canCreate = store.canCreateFolders(accountID: group.account.id)
-					if !folders.isEmpty || canCreate {
+					if folders.isEmpty && canCreate {
+						SidebarRow(icon: .add, title: store.isGmailAccount(group.account) ? "Add Label" : "Add Folder", badge: 0, tint: nil, isSelected: false) {
+							let parent = group.inbox ?? store.inboxAddresses(of: group.account.id).first
+							store.folderRequest = .init(accountID: group.account.id, kind: .create(parentID: parent?.id))
+						}
+					} else if !folders.isEmpty {
 						let subID = "open:" + id + "-folders"
 						let open = store.collapsedSections.contains(subID)
 						subHeading(store.isGmailAccount(group.account) ? "Labels" : "Folders", isOpen: open, onAdd: canCreate ? {
