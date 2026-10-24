@@ -98,10 +98,21 @@ struct MessageListView: View {
 		.overlay { menuLayer }
 		// Last, so it sees right clicks before anything below; it lets every other event through.
 		.overlay { RightClickCatcher { openMenu(at: $0) } }
+		.onChange(of: store.messages) { _, _ in loadMoreIfNearEnd() }
+		// Older mail stored by the server fetch, which may not change the rows listed yet.
+		.onChange(of: store.total) { _, _ in loadMoreIfNearEnd() }
 		.overlay {
-			if store.messages.isEmpty {
+			if store.isAwaitingMail {
+				MessageListSkeleton()
+			} else if store.messages.isEmpty, store.loadMoreFailed {
+				VStack(spacing: 10) {
+					EmptyStateView(icon: .inbox, title: "Couldn’t Load Messages", message: "The server couldn’t be reached.")
+						.fixedSize(horizontal: false, vertical: true)
+					Button("Retry") { store.retryLoadMore() }.buttonStyle(.pill)
+				}
+			} else if store.messages.isEmpty {
 				if store.searchText.isEmpty {
-					EmptyStateView(icon: .inbox, title: store.isSyncing ? "Syncing…" : "No Messages")
+					EmptyStateView(icon: .inbox, title: "No Messages")
 				} else {
 					EmptyStateView(icon: .search, title: "No Results", message: "Nothing matches “\(store.searchText)”.")
 				}
@@ -117,6 +128,30 @@ struct MessageListView: View {
 		let row = metrics.row(at: offset)
 		if row != firstVisibleRow { firstVisibleRow = row }
 		if abs(viewport - viewportHeight) > 1 { viewportHeight = viewport }
+		loadMoreIfNearEnd()
+	}
+
+	/// Tells the store where the reader is, after a scroll and after the list changes (a short list
+	/// that does not fill the pane never scrolls); it decides what to load ahead.
+	private func loadMoreIfNearEnd() {
+		guard store.canLoadMore else { return }
+		let count = store.messages.count
+		let lastVisible = count == 0 ? -1 : metrics.row(at: scrollPosition.offset + viewportHeight)
+		store.loadMore(rowsBelow: count - 1 - lastVisible, screenRows: Int((viewportHeight / Self.rowHeight).rounded(.up)))
+	}
+
+	/// Below the last row: a spinner while older mail comes in, or a way to try again after it failed.
+	@ViewBuilder
+	private var footer: some View {
+		if store.isLoadingMore {
+			ProgressView().controlSize(.small).frame(maxWidth: .infinity).frame(height: 44)
+		} else if store.loadMoreFailed {
+			HStack(spacing: 8) {
+				Text("Couldn’t load older messages.").font(Typography.meta).foregroundStyle(.secondary)
+				Button("Retry") { store.retryLoadMore() }.buttonStyle(.link).font(Typography.meta)
+			}
+			.frame(maxWidth: .infinity).frame(height: 44)
+		}
 	}
 
 	private var rows: some View {
@@ -132,8 +167,8 @@ struct MessageListView: View {
 			if start < end {
 				ForEach(Array(messages[start..<end].enumerated()), id: \.element.id) { offset, message in
 					let index = start + offset
-					let nextIsSelected = messages.indices.contains(index + 1) && messages[index + 1].id == store.selectedID
-					let selected = message.id == store.selectedID
+					let nextIsSelected = messages.indices.contains(index + 1) && (store.multiSelection.isEmpty ? messages[index + 1].id == store.selectedID : store.multiSelection.contains(messages[index + 1].id))
+					let selected = store.multiSelection.isEmpty ? message.id == store.selectedID : store.multiSelection.contains(message.id)
 					MessageRow(
 						message: message, isDraft: store.role(of: message) == "drafts", isSelected: selected,
 						isMenuTarget: menu?.id == message.id,
@@ -141,11 +176,16 @@ struct MessageListView: View {
 						showsDivider: index < count - 1 && !selected && !nextIsSelected,
 						height: metrics.height(at: index))
 						.id(message.id)
-						.onTapGesture { store.select(message.id) }
-						.onAppear { store.loadMoreIfNeeded(current: message) }
+						.onTapGesture {
+							let flags = NSEvent.modifierFlags
+							if flags.contains(.shift) { store.extendSelection(to: message.id) }
+							else if flags.contains(.command) { store.toggleSelection(of: message.id) }
+							else { store.select(message.id) }
+						}
 				}
 			}
 			Color.clear.frame(height: max(metrics.offset(of: count) - metrics.offset(of: end), 0))
+			if count > 0 { footer }
 		}
 		.background(ScrollObserver { offset, viewport in scrolled(offset: offset, viewport: viewport) })
 		.padding(.vertical, Self.listInset)
@@ -158,6 +198,8 @@ struct MessageListView: View {
 		let y = scrollPosition.offset + point.y - Self.listInset
 		guard y >= 0, y < metrics.offset(of: store.messages.count) else { closeMenu(); return }
 		let message = store.messages[metrics.row(at: y)]
+		// A right click outside the picked rows leaves the multiple selection.
+		if !store.multiSelection.isEmpty, !store.multiSelection.contains(message.id) { store.select(message.id) }
 		withAnimation(.snappy(duration: 0.2)) { menu = ContextMenuTarget(id: message.id, point: point) }
 	}
 
@@ -194,21 +236,63 @@ struct MessageListView: View {
 	/// The "…" menu's card and rows, with the actions of a message.
 	private func menuCard(for m: MessageSummary, anchor: UnitPoint) -> some View {
 		let role = store.role(of: m)
+		let ids = store.actionIDs(for: m.id)
+		let many = ids.count > 1
+		let picked = ids.compactMap { id in store.messages.first { $0.id == id } }
 		func choose(_ action: () -> Void) {
 			closeMenu()
 			action()
 		}
+		let font = Self.menuFont
 		return DropdownCard(width: Self.menuWidth, anchor: anchor, spacing: 1) {
-			DropdownRow(label: "Reply", icon: .reply, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.reply(to: m.id, all: false) } }
-			DropdownRow(label: "Forward", icon: .forward, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.forward(m.id) } }
+			DropdownRow(label: "Reply", icon: .reply, isEnabled: !many, labelFont: font, verticalPadding: 3.5) { choose { store.reply(to: m.id, all: false) } }
+			DropdownRow(label: "Forward", icon: .forward, isEnabled: !many, labelFont: font, verticalPadding: 3.5) { choose { store.forward(m.id) } }
 			DropdownDivider()
-			DropdownRow(label: m.flagged ? "Remove Flag" : "Flag", icon: m.flagged ? .unflag : .flag, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.toggleFlag(m.id) } }
-			DropdownRow(label: m.seen ? "Mark as Unread" : "Mark as Read", icon: m.seen ? .markUnread : .markRead, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.setRead(m.id, !m.seen) } }
+			let allFlagged = picked.allSatisfy(\.flagged)
+			let allRead = picked.allSatisfy(\.seen)
+			DropdownRow(label: allFlagged ? "Remove Flag" : "Flag", icon: allFlagged ? .unflag : .flag, labelFont: font, verticalPadding: 3.5) { choose { store.toggleFlag(ids: ids) } }
+			DropdownRow(label: allRead ? "Mark as Unread" : "Mark as Read", icon: allRead ? .markUnread : .markRead, labelFont: font, verticalPadding: 3.5) { choose { store.toggleRead(ids: ids) } }
 			DropdownDivider()
-			DropdownRow(label: "Archive", icon: .archive, isEnabled: role != "archive", labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.archive(m.id) } }
-			DropdownRow(label: "Move to Junk", icon: .junk, isEnabled: role != "junk", labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.junk(m.id) } }
-			DropdownRow(label: "Delete", icon: .trash, labelFont: Self.menuFont, verticalPadding: 3.5) { choose { store.trash(m.id) } }
+			DropdownRow(label: "Archive", icon: .archive, isEnabled: role != "archive", labelFont: font, verticalPadding: 3.5) { choose { store.archive(ids: ids) } }
+			DropdownRow(label: "Move to Junk", icon: .junk, isEnabled: role != "junk", labelFont: font, verticalPadding: 3.5) { choose { store.junk(ids: ids) } }
+			DropdownRow(label: "Delete", icon: .trash, labelFont: font, verticalPadding: 3.5) { choose { store.trash(ids: ids) } }
 		}
+	}
+}
+
+/// Stands in for the list while the first page of mail is on its way: ten rows of grey bars.
+struct MessageListSkeleton: View {
+	/// Sender, subject and preview bar widths, varied so the rows do not look stamped.
+	private static let widths: [(sender: CGFloat, subject: CGFloat, preview: CGFloat)] = [
+		(110, 190, 0.9), (84, 150, 0.7), (130, 210, 0.95), (96, 170, 0.6), (120, 140, 0.85),
+	]
+
+	var body: some View {
+		VStack(spacing: 0) {
+			ForEach(0..<10, id: \.self) { index in
+				let w = Self.widths[index % Self.widths.count]
+				VStack(alignment: .leading, spacing: 8) {
+					HStack {
+						SkeletonBar(width: w.sender, height: 11)
+						Spacer(minLength: 4)
+						SkeletonBar(width: 34, height: 9)
+					}
+					SkeletonBar(width: w.subject, height: 10)
+					GeometryReader { proxy in SkeletonBar(width: proxy.size.width * w.preview, height: 9) }.frame(height: 9)
+				}
+				.padding(.leading, MessageRow.textInset)
+				.padding(.trailing, 16)
+				.padding(.vertical, 14)
+				.overlay(alignment: .bottom) {
+					Rectangle().fill(AppTheme.cardStroke.opacity(0.7)).frame(height: 1).padding(.leading, MessageRow.textInset).padding(.trailing, 16)
+				}
+			}
+			Spacer(minLength: 0)
+		}
+		.padding(.vertical, MessageListView.listInset)
+		.background(AppTheme.background)
+		.allowsHitTesting(false)
+		.accessibilityLabel("Loading messages")
 	}
 }
 

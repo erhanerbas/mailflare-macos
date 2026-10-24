@@ -10,8 +10,6 @@ struct ComposeView: View {
 	@Environment(\.colorScheme) private var colorScheme
 	@State private var showQuoted = false
 	@State private var quotedHeight: CGFloat = 0
-	@State private var linkOpen = false
-	@State private var linkURL = ""
 	@State private var saveTemplateOpen = false
 	@State private var templateTitle = ""
 	@State private var isDropTarget = false
@@ -106,9 +104,6 @@ struct ComposeView: View {
 		.background(AppTheme.background)
 		.overlay { if isDropTarget { Rectangle().stroke(Color.accentColor, lineWidth: 2) } }
 		.dropDestination(for: URL.self) { urls, _ in addFiles(urls.filter(\.isFileURL)); return true } isTargeted: { isDropTarget = $0 }
-		.onChange(of: controller.linkRequested) { _, requested in
-			if requested { controller.linkRequested = false; openLink() }
-		}
 		.alert("Save as Template", isPresented: $saveTemplateOpen) {
 			TextField("Title", text: $templateTitle)
 			Button("Save") { store.templates.add(title: templateTitle, html: draft.body) }
@@ -146,24 +141,7 @@ struct ComposeView: View {
 	}
 
 	private var formattingBar: some View {
-		let f = controller.formats
-		return HStack(spacing: 2) {
-			TitlebarIconButton(icon: .bold, help: "Bold (⌘B)", isActive: f.bold) { controller.bold() }
-			TitlebarIconButton(icon: .italic, help: "Italic (⌘I)", isActive: f.italic) { controller.italic() }
-			TitlebarIconButton(icon: .underline, help: "Underline (⌘U)", isActive: f.underline) { controller.underline() }
-			TitlebarIconButton(icon: .strikethrough, help: "Strikethrough", isActive: f.strike) { controller.strikethrough() }
-			divider
-			TitlebarIconButton(icon: .bulletList, help: "Bulleted list", isActive: f.bulletList) { controller.bulletList() }
-			TitlebarIconButton(icon: .numberList, help: "Numbered list", isActive: f.numberList) { controller.numberList() }
-			TitlebarIconButton(icon: .quote, help: "Quote", isActive: f.quote) { controller.quote() }
-			divider
-			TitlebarIconButton(icon: .link, help: "Insert link (⌘K)") { openLink() }
-				.popover(isPresented: $linkOpen, arrowEdge: .top) { linkField }
-			TitlebarIconButton(icon: .clearFormat, help: "Clear formatting") { controller.clearFormatting() }
-			divider
-			TitlebarIconButton(icon: .undo, help: "Undo (⌘Z)", isEnabled: controller.canUndo) { controller.undo() }
-			TitlebarIconButton(icon: .redo, help: "Redo (⇧⌘Z)", isEnabled: controller.canRedo) { controller.redo() }
-			Spacer()
+		FormattingToolbar(controller: controller) {
 			// Same state as the reader's colors button: shown where the quoted mail has no dark styles.
 			if quoteNeedsAdapting {
 				TitlebarIconButton(
@@ -175,31 +153,6 @@ struct ComposeView: View {
 			TitlebarIconButton(icon: .attachment, help: "Attach files (up to 10 MB each)", tooltipTrailing: true) { attach() }
 		}
 		.padding(.horizontal, 12).padding(.vertical, 4)
-	}
-
-	private var divider: some View {
-		Rectangle().fill(AppTheme.composerStroke).frame(width: 1, height: 16).padding(.horizontal, 6)
-	}
-
-	private var linkField: some View {
-		HStack(spacing: 8) {
-			TextField("https://", text: $linkURL)
-				.textFieldStyle(.plain).font(Typography.body).frame(width: 220)
-				.onSubmit(applyLink)
-			Button("Apply", action: applyLink).buttonStyle(.pill)
-		}
-		.padding(12)
-	}
-
-	private func openLink() {
-		controller.rememberSelection()
-		linkURL = ""
-		linkOpen = true
-	}
-
-	private func applyLink() {
-		linkOpen = false
-		controller.insertLink(linkURL)
 	}
 
 	/// The quoted original, folded behind a toggle as in the web composer.

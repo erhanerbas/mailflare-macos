@@ -245,21 +245,31 @@ struct ContentView: View {
 	private var blockedBySystem: Bool { store.notifier.authorization == .denied }
 
 	private var titlebarLeading: some View {
-		HStack(spacing: 2) {
-			TitlebarIconButton(icon: .sidebar, help: "Toggle sidebar (⌃⌘S)") { toggleSidebar() }
-				.keyboardShortcut("s", modifiers: [.control, .command])
-			if blockedBySystem || !notificationsOn {
-				// macOS blocks it: only System Settings can lift that. Otherwise it is Mailflare's own switch.
-				TitlebarIconButton(icon: .notificationOff, help: "Notification is off", tint: .orange) {
-					if blockedBySystem { MailNotifier.openSystemSettings() } else { store.settingsPage = .notifications }
-				}
+		// With the sidebar docked the toggle ends where the account dropdown does, and the
+		// notification warning sits to its left. Otherwise the toggle starts past the traffic lights.
+		let docked = layout.showSidebar
+		let toggle = TitlebarIconButton(icon: .sidebar, help: "Toggle sidebar (⌃⌘S)") { toggleSidebar() }
+			.keyboardShortcut("s", modifiers: [.control, .command])
+		let warning = TitlebarIconButton(icon: .notificationOff, help: "Notification is off", tint: .orange) {
+			// macOS blocks it: only System Settings can lift that. Otherwise it is Mailflare's own switch.
+			if blockedBySystem { MailNotifier.openSystemSettings() } else { store.settingsPage = .notifications }
+		}
+		let warns = blockedBySystem || !notificationsOn
+		return HStack(spacing: 3.5) {
+			if docked {
+				if warns { warning }
+				toggle
+			} else {
+				toggle
+				if warns { warning }
 			}
 			// Narrow windows show one column at a time; this goes from the message back to the list.
 			if layout.single && store.selectedID != nil && store.settingsPage == nil {
 				TitlebarIconButton(icon: .arrowLeft, help: "Back to messages") { store.select(nil) }
 			}
 		}
-		.padding(.leading, WindowChromeMetrics.sidebarToggleLeading)
+		.frame(width: docked ? max(0, layout.sidebarW - SidebarView.gutter) : nil, alignment: .trailing)
+		.padding(.leading, docked ? 0 : WindowChromeMetrics.sidebarToggleLeading)
 		.padding(.top, WindowChromeMetrics.titlebarRowCenter - TitlebarIconButton.size / 2)
 	}
 
@@ -298,7 +308,7 @@ struct ContentView: View {
 	/// The actions that apply to the selected message, on the card's trailing edge, grouped by
 	/// separators. Nothing shows without a selection.
 	private var titlebarTrailing: some View {
-		let message = store.selectedMessage
+		let message = store.multiSelection.isEmpty ? store.selectedMessage : nil
 		let role = message.map { store.role(of: $0) } ?? nil
 		let isDraft = role == "drafts"
 		return HStack(spacing: 8) {
@@ -329,8 +339,7 @@ struct ContentView: View {
                     
                     if store.ai.isConfigured {
                         TitlebarIconButton(icon: .aiContent, help: store.summarizingID == message.id ? "Summarizing…" : "Summarize with AI",
-                                           isActive: store.summarizingID == message.id) { store.summarizeSelected() }
-                            .disabled(store.detail?.summary.id != message.id || store.summarizingID != nil)
+                                           isEnabled: store.detail?.summary.id == message.id, isLoading: store.summarizingID == message.id) { store.summarizeSelected() }
                     }
                     
 					// Only where the body has no dark styles of its own to defer to.

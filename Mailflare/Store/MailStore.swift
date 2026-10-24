@@ -70,6 +70,9 @@ final class MailStore {
 	var messages: [MessageSummary] = []
 	var total = 0
 	var selectedID: String?
+	/// Several messages picked at once with Shift or Command; empty when one message (or none) is.
+	/// `selectedID` stays the anchor a Shift click extends from.
+	var multiSelection: Set<String> = []
 	var detail: MessageDetail?
 	var searchText = ""
 	/// Whether the open message's colors are re-made for the dark window (see `MessageAppearance`);
@@ -172,12 +175,12 @@ final class MailStore {
 	}
 
 	private func go(to item: SidebarItem) {
-		let changed = sidebar != item
 		sidebar = item
 		searchText = ""
 		selectedID = nil; detail = nil
 		pageLimit = pageSize
-		if !changed { reload() }
+		// At once, so the old list never shows under the new title; `sidebarChanged` then reads the cache.
+		reload()
 	}
 
 	/// Whether the single-inbox sidebar is in play: one inbox, not several combined.
@@ -262,6 +265,7 @@ final class MailStore {
 			if let scratch = ProcessInfo.processInfo.environment["MAILFLARE_DATA_DIR"] { base = URL(fileURLWithPath: scratch, isDirectory: true) }
 			#endif
 			avatars = AvatarCache(directory: base.appendingPathComponent("avatars", isDirectory: true))
+			quickReplies = QuickReplies(file: base.appendingPathComponent("quick-replies.json"))
 			let core = try MailCore(dataDir: base.path, credentials: KeychainCredentialStore())
 			core.setListener(listener: events)
 			self.core = core
@@ -557,13 +561,14 @@ final class MailStore {
 		if target.id == account?.id { signOut(); return }
 		try? core?.signOut(accountId: target.id)
 		profiles.forget(target.id)
+		quickReplies.forget(account: target.id)
 		accountList = (try? core?.accounts()) ?? accountList.filter { $0.id != target.id }
 		license.retain(accountIDs: accountList.map(\.id))
 	}
 
 	func signOut(notice: String? = nil) {
 		stopPolling()
-		if let id = account?.id { try? core?.signOut(accountId: id); profiles.forget(id) }
+		if let id = account?.id { try? core?.signOut(accountId: id); profiles.forget(id); quickReplies.forget(account: id) }
 		account = nil; mailboxes = []; identities = []; messages = []; detail = nil; selectedID = nil
 		compose = nil; minimizedDraft = nil; searchText = ""; settingsPage = nil
 		chat.reset()
@@ -1367,6 +1372,7 @@ final class MailStore {
 
 	func reload() {
 		guard let core, account != nil else { return }
+		resetOlderIfListChanged()
 		if activeView != nil { reloadView(); return }
 		let id = accountID
 		let q = searchText.trimmingCharacters(in: .whitespaces)
@@ -1394,6 +1400,9 @@ final class MailStore {
 		list = keepingOpened(list)
 		messages = list
 		total = count ?? list.count
+		// Only a plain folder pages; search, filters and lists worked out in memory do not.
+		let pages = q.isEmpty && !unreadOnly && sidebar != .remindMe
+		setOlderSources(pages ? folder.map { [OlderSource(account: id, folder: $0)] } ?? [] : [])
 	}
 
 	// MARK: Opened mail stays listed
@@ -1421,7 +1430,10 @@ final class MailStore {
 			let (account, raw) = owner(of: id)
 			guard !listed.contains(id), let now = try? core.messageSummary(accountId: account, messageId: raw),
 				  now.seen, now.mailboxId == old.mailboxId else { opened[id] = nil; continue }
-			list.insert(old, at: list.firstIndex { $0.receivedAt < old.receivedAt } ?? list.count)
+			// Shown as it is now (read), so the row loses its unread mark but stays where it was.
+			var kept = now
+			kept.id = id
+			list.insert(kept, at: list.firstIndex { $0.receivedAt < old.receivedAt } ?? list.count)
 		}
 		return list
 	}
@@ -1506,6 +1518,7 @@ final class MailStore {
 		list = keepingOpened(list)
 		messages = list
 		total = filtered ? list.count : count
+		setOlderSources(filtered || !q.isEmpty ? [] : paged.map { OlderSource(account: $0.account, folder: $0.folder) })
 	}
 
 	private func tag(_ message: MessageSummary, _ account: String) -> MessageSummary {
@@ -1588,29 +1601,111 @@ final class MailStore {
 		return loaded
 	}
 
-	func loadMoreIfNeeded(current: MessageSummary) {
-		if activeView != nil {
-			guard messages.last?.id == current.id, searchText.isEmpty, !unreadOnly, messages.count < total else { return }
-			pageLimit += pageSize
-			reload()
-			return
+	// MARK: Loading older mail
+
+	/// A folder the list pages through, in one account.
+	struct OlderSource {
+		var account: String
+		var folder: Folder
+	}
+
+	/// Where older mail for the list in view can come from once the local store runs out. Empty for
+	/// lists worked out in memory (search, filters, smart lists), which have nothing to page.
+	private(set) var olderSources: [OlderSource] = []
+	/// Older mail is being read in from the server.
+	private(set) var isLoadingMore = false
+	/// The server had nothing older for this list.
+	private(set) var reachedEnd = false
+	/// The last attempt to read older mail failed; it is tried again only when asked (Retry).
+	private(set) var loadMoreFailed = false
+	/// The list the state above belongs to (`listContext`); another list starts it over.
+	@ObservationIgnored private var olderContext = ""
+
+	/// Whether there is more of the list to show: further down the local store, or on the server.
+	var canLoadMore: Bool { messages.count < total || (!reachedEnd && !olderSources.isEmpty) }
+
+	/// The list is empty for now but mail is on its way, so it shows placeholder rows, not "No Messages".
+	var isAwaitingMail: Bool { messages.isEmpty && (isSyncing || isLoadingMore || (canLoadMore && !loadMoreFailed)) }
+
+	/// Starts the older-mail state over when the list is of something else.
+	private func resetOlderIfListChanged() {
+		let context = listContext
+		guard context != olderContext else { return }
+		olderContext = context
+		olderTask?.cancel(); olderTask = nil
+		isLoadingMore = false; reachedEnd = false; loadMoreFailed = false
+	}
+
+	/// How many messages the server says a folder holds, when the mailboxes say.
+	private func serverTotal(_ source: OlderSource) -> Int? {
+		let boxes = mailboxes(of: source.account)
+		switch source.folder {
+		case .mailbox(let id): return boxes.first { $0.id == id }.map { Int($0.totalEmails) }
+		case .role(let role): return boxes.filter { $0.role == role }.reduce(0) { $0 + Int($1.totalEmails) }
+		case .starred: return nil
 		}
-		guard messages.last?.id == current.id, searchText.isEmpty, let core, let folder, !unreadOnly else { return }
-		if messages.count < total {
+	}
+
+	/// Sets where older mail comes from after a reload, leaving out folders the store already holds
+	/// in full, and fetches at once when the list came up empty.
+	private func setOlderSources(_ sources: [OlderSource]) {
+		olderSources = sources.filter { source in
+			guard let server = serverTotal(source) else { return true }
+			let local = (try? fetch(source.account, source.folder, limit: 1).count) ?? 0
+			return local < server
+		}
+		if messages.isEmpty { Task { [weak self] in self?.fetchOlder() } }
+	}
+
+	/// Keeps the list ahead of the reader, given how many listed rows are below the viewport and how
+	/// many rows a screen holds. The next local page is added while a couple of screens are left, which
+	/// is instant. Older mail is asked of the server sooner, while several screens of local mail are
+	/// still unread, because some servers take seconds to answer.
+	func loadMore(rowsBelow: Int, screenRows: Int) {
+		let screen = max(screenRows, 1)
+		let localBelow = rowsBelow + (total - messages.count)
+		if rowsBelow < 2 * screen, messages.count < total {
 			pageLimit += pageSize
 			reload()
-		} else if olderTask == nil {
-			// Local window exhausted: ask the server for older mail.
-			let id = accountID
-			olderTask = Task {
-				defer { olderTask = nil }
-				if let n = try? await core.fetchOlder(accountId: id, folder: folder), n > 0 {
-						invalidateCaches()
-					pageLimit += pageSize
-					reload()
+		}
+		if localBelow < 4 * screen { fetchOlder() }
+	}
+
+	/// Reads older mail of every source from the server in the background. The list grows from the
+	/// store as it is scrolled; the spinner below the last row shows only if the reader gets there first.
+	private func fetchOlder() {
+		guard let core, !isLoadingMore, !reachedEnd, !loadMoreFailed, !olderSources.isEmpty else { return }
+		let sources = olderSources, context = listContext, before = total
+		isLoadingMore = true
+		olderTask = Task { [weak self] in
+			// Sources in different accounts don't wait on each other.
+			let results = await withTaskGroup(of: UInt32?.self) { group in
+				for source in sources {
+					group.addTask { try? await core.fetchOlder(accountId: source.account, folder: source.folder) }
 				}
+				return await group.reduce(into: [UInt32?]()) { $0.append($1) }
+			}
+			guard let self, !Task.isCancelled, self.olderContext == context else { return }
+			let fetched = results.reduce(0) { $0 + ($1 ?? 0) }
+			self.olderTask = nil
+			self.isLoadingMore = false
+			if fetched > 0 {
+				self.invalidateCaches()
+				self.reload()
+				// Rows the store already held: nothing older came, so don't ask again.
+				if self.total <= before { self.reachedEnd = true }
+			} else if results.contains(where: { $0 == nil }) {
+				self.loadMoreFailed = true
+			} else {
+				self.reachedEnd = true
 			}
 		}
+	}
+
+	/// Tries again after reading older mail failed.
+	func retryLoadMore() {
+		loadMoreFailed = false
+		fetchOlder()
 	}
 
 	func sidebarChanged() {
@@ -1644,6 +1739,7 @@ final class MailStore {
 	// MARK: Selection and body
 
 	func select(_ id: String?) {
+		multiSelection = []
 		guard id != selectedID else { return }
 		selectedID = id
 		detail = nil
@@ -1664,6 +1760,69 @@ final class MailStore {
 				if !Task.isCancelled, self?.selectedID == id { self?.detail = Self.tagged(d, id: id) }
 			} catch { if !Task.isCancelled { self?.banner = describe(error) } }
 		}
+	}
+
+	// MARK: Multiple selection
+
+	/// Shift click: everything between the anchor and `id`.
+	func extendSelection(to id: String) {
+		guard let anchor = selectedID, let from = messages.firstIndex(where: { $0.id == anchor }),
+			  let to = messages.firstIndex(where: { $0.id == id }) else { select(id); return }
+		let range = messages[min(from, to)...max(from, to)].map(\.id)
+		if range.count < 2 { select(id); return }
+		multiSelection = Set(range)
+	}
+
+	/// Command click: adds `id` to the picked messages, or takes it out.
+	func toggleSelection(of id: String) {
+		var picked = multiSelection.isEmpty ? Set(selectedID.map { [$0] } ?? []) : multiSelection
+		if picked.contains(id) { picked.remove(id) } else { picked.insert(id) }
+		switch picked.count {
+		case 0: select(nil)
+		case 1: select(picked.first)
+		default: multiSelection = picked
+		}
+	}
+
+	/// The messages an action from the list applies to: the picked ones when `id` is among them.
+	func actionIDs(for id: String) -> [String] {
+		multiSelection.contains(id) ? messages.map(\.id).filter(multiSelection.contains) : [id]
+	}
+
+	/// Runs `work` once per account for these messages, then refreshes and keeps a sensible selection.
+	private func bulk(_ ids: [String], _ work: (_ account: String, _ raw: [String]) throws -> Void) {
+		guard !ids.isEmpty else { return }
+		var byAccount: [String: [String]] = [:]
+		for id in ids { let o = owner(of: id); byAccount[o.account, default: []].append(o.message) }
+		let next = ids.count == 1 ? nextSelection(after: ids[0]) : nil
+		attempt { for (account, raw) in byAccount { try work(account, raw) } }
+		reload()
+		refreshMailboxes()
+		multiSelection = []
+		if let current = selectedID, !messages.contains(where: { $0.id == current }) {
+			selectedID = nil; detail = nil
+			select(next)
+		}
+	}
+
+	func archive(ids: [String]) { moveToRole(ids, "archive") }
+	func junk(ids: [String]) { moveToRole(ids, "junk") }
+	private func moveToRole(_ ids: [String], _ role: String) {
+		bulk(ids) { account, raw in _ = try core?.moveMessages(accountId: account, messageIds: raw, target: .role(role: role)) }
+	}
+	func trash(ids: [String]) {
+		bulk(ids) { account, raw in _ = try core?.deleteMessages(accountId: account, messageIds: raw) }
+	}
+	/// Flags them all, or unflags them all when each is already flagged.
+	func toggleFlag(ids: [String]) {
+		let flagged = !ids.allSatisfy { id in messages.first { $0.id == id }?.flagged ?? false }
+		bulk(ids) { account, raw in try core?.setFlagged(accountId: account, messageIds: raw, flagged: flagged) }
+	}
+	/// Marks them all read, or all unread when each is already read.
+	func toggleRead(ids: [String]) {
+		let read = !ids.allSatisfy { id in messages.first { $0.id == id }?.seen ?? true }
+		bulk(ids) { account, raw in try core?.setSeen(accountId: account, messageIds: raw, seen: read) }
+		if read { for id in ids { notifier.clear(messageID: owner(of: id).message) } }
 	}
 
 	/// AI summaries by listed-message id, loaded from the core's database or just made.
@@ -1895,15 +2054,25 @@ final class MailStore {
 
 	let templates = ComposeTemplates()
 
-	/// Closes the composer at once and queues the message in the core's outbox off the main thread
-	/// (queuing copies attachments). Only what can be checked here throws; a failure to queue reopens
-	/// the composer, and a failure to deliver surfaces through the outbox event.
+	/// Closes the composer at once and queues the message. Only what can be checked here throws; a
+	/// failure to queue reopens the composer.
 	func commit(_ draft: ComposeDraft, send: Bool) throws {
-		guard let core else { return }
+		guard core != nil else { return }
 		let message = try outgoing(draft)
 		if send, message.to.isEmpty { throw CoreError.InvalidInput(message: "Add at least one valid recipient.") }
-		let acct = draft.accountID ?? accountID
 		compose = nil
+		enqueue(message, accountID: draft.accountID ?? accountID, send: send) { [weak self] in
+			guard let self else { return }
+			// Back where it was, unless another message took the composer meanwhile.
+			if compose == nil { compose = draft } else if minimizedDraft == nil { minimizedDraft = draft }
+		}
+	}
+
+	/// Queues a message in the core's outbox off the main thread (queuing copies attachments). A
+	/// failure to queue is reported and handed to `onFailure`; a failure to deliver surfaces through
+	/// the outbox event.
+	private func enqueue(_ message: OutgoingMessage, accountID acct: String, send: Bool, onFailure: @escaping () -> Void) {
+		guard let core else { return }
 		if send {
 			// Stays up until the core reports the message sent, or that it could not be.
 			showToast("Sending…", detail: message.subject, icon: .send, isProgress: true, duration: 60)
@@ -1918,8 +2087,47 @@ final class MailStore {
 			} catch {
 				toast = nil
 				banner = "“\(message.subject.isEmpty ? "Your message" : message.subject)” could not be \(send ? "sent" : "saved"): \(describe(error))"
-				// Back where it was, unless another message took the composer meanwhile.
-				if compose == nil { compose = draft } else if minimizedDraft == nil { minimizedDraft = draft }
+				onFailure()
+			}
+		}
+	}
+
+	// MARK: Quick reply
+
+	/// Replies typed in the reader's reply box, kept per message until sent.
+	@ObservationIgnored private(set) var quickReplies = QuickReplies(file: nil)
+
+	/// The key a listed message's reply is kept under.
+	func quickReplyKey(_ id: String) -> String {
+		let (acct, raw) = owner(of: id)
+		return QuickReplies.key(account: acct, message: raw)
+	}
+
+	/// Sends `html` as a reply to a listed message, as the composer's Reply would: to the sender, with
+	/// the subject, threading, signature and quoted original. The reply box clears at once; if the
+	/// reply can't be queued, `onFailure` gives the text back.
+	func sendQuickReply(to id: String, html: String, onFailure: @escaping () -> Void) {
+		guard let core else { return }
+		let (acct, raw) = owner(of: id)
+		let key = quickReplyKey(id)
+		quickReplies.set("", for: key)
+		let failed: () -> Void = { [weak self] in
+			self?.quickReplies.set(html, for: key)
+			onFailure()
+		}
+		showToast("Sending…", detail: messages.first { $0.id == id }.map { "Re: \($0.subject)" } ?? "", icon: .send, isProgress: true, duration: 60)
+		Task {
+			do {
+				var reply = draft(from: try await core.composeTemplate(accountId: acct, messageId: raw, kind: .reply), title: "Reply", accountID: acct)
+				// The template's body is the signature, which goes below what was written.
+				reply.body = reply.body.isEmpty ? html : html + reply.body
+				let message = try outgoing(reply)
+				guard !message.to.isEmpty else { throw CoreError.InvalidInput(message: "This message has no address to reply to.") }
+				enqueue(message, accountID: acct, send: true, onFailure: failed)
+			} catch {
+				toast = nil
+				banner = "Your reply could not be sent: \(describe(error))"
+				failed()
 			}
 		}
 	}

@@ -77,9 +77,20 @@ struct ComposerEditor: NSViewRepresentable {
 	let initialHTML: String
 	let controller: ComposerController
 	var placeholder = "Write your message…"
+	/// Sized by its text instead of filling its frame: it reports its height (`onHeight`) and scrolls
+	/// on its own once the frame it is given is shorter. For the reader's reply box.
+	var fitsContent = false
+	/// Takes the keyboard once loaded, with the caret after the text.
+	var autofocus = false
 	var onChange: (String) -> Void
 	/// Files dropped on the editor; they become attachments rather than page content.
 	var onFiles: ([URL]) -> Void = { _ in }
+	/// The text's height in points, when `fitsContent`.
+	var onHeight: (CGFloat) -> Void = { _ in }
+	/// The page has loaded (and, with `autofocus`, taken the keyboard).
+	var onReady: () -> Void = {}
+	/// Escape was pressed in the editor.
+	var onEscape: () -> Void = {}
 
 	func makeNSView(context: Context) -> WKWebView {
 		let config = WKWebViewConfiguration()
@@ -87,10 +98,11 @@ struct ComposerEditor: NSViewRepresentable {
 		config.userContentController.addUserScript(WKUserScript(source: Self.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
 		config.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: "composer")
 		let view = ComposerWebView(frame: .zero, configuration: config)
+		view.navigationDelegate = context.coordinator
 		view.setValue(false, forKey: "drawsBackground")
 		view.onFiles = { [coordinator = context.coordinator] urls in coordinator.parent.onFiles(urls) }
 		controller.webView = view
-		view.loadHTMLString(Self.document(body: initialHTML, placeholder: placeholder), baseURL: nil)
+		view.loadHTMLString(Self.document(body: initialHTML, placeholder: placeholder, fitsContent: fitsContent), baseURL: nil)
 		return view
 	}
 
@@ -100,9 +112,22 @@ struct ComposerEditor: NSViewRepresentable {
 
 	func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-	final class Coordinator: NSObject, WKScriptMessageHandler {
+	final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 		var parent: ComposerEditor
 		init(_ parent: ComposerEditor) { self.parent = parent }
+
+		func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+			if parent.autofocus {
+				webView.window?.makeFirstResponder(webView)
+				webView.evaluateJavaScript("__mf.focusEnd()", in: nil, in: .defaultClient) { _ in }
+			}
+			parent.onReady()
+		}
+
+		/// Links in the editor are text being written, never somewhere to go.
+		func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+			action.navigationType == .other ? .allow : .cancel
+		}
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let payload = message.body as? [String: Any], let name = payload["name"] as? String else { return }
@@ -112,6 +137,8 @@ struct ComposerEditor: NSViewRepresentable {
 				case "state": parent.controller.apply(payload["body"] as? [String: Any] ?? [:])
 				case "history": parent.controller.applyHistory(payload["body"] as? [String: Any] ?? [:])
 				case "link": parent.controller.linkRequested = true
+				case "height": (payload["body"] as? NSNumber).map { parent.onHeight(CGFloat($0.doubleValue)) }
+				case "escape": parent.onEscape()
 				default: break
 				}
 			}
@@ -154,7 +181,9 @@ struct ComposerEditor: NSViewRepresentable {
 		return out
 	}
 
-	private static func document(body: String, placeholder: String) -> String {
+	private static func document(body: String, placeholder: String, fitsContent: Bool) -> String {
+		// Fitting: the text sets its own height and the page scrolls when the frame is shorter.
+		let fit = fitsContent ? "body{overflow-y:auto}#ed{min-height:0;padding:0}" : ""
 		let hint = placeholder.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;").replacingOccurrences(of: "<", with: "&lt;")
 		return """
 		<!doctype html><html><head><meta charset="utf-8">
@@ -166,7 +195,7 @@ struct ComposerEditor: NSViewRepresentable {
 		#ed{min-height:100%;box-sizing:border-box;padding:10px 14px;outline:none;word-wrap:break-word}
 		#ed:empty::before{content:attr(data-placeholder);color:#8e8e93;pointer-events:none}
 		blockquote{margin:0 0 0 2px;padding-left:12px;border-left:3px solid rgba(128,128,128,.45);color:inherit;opacity:.85}
-		a{color:#0a84ff}img{max-width:100%;height:auto}pre{font-family:inherit}
+		a{color:#0a84ff}img{max-width:100%;height:auto}pre{font-family:inherit}\(fit)
 		</style></head><body><div id="ed" contenteditable="true" spellcheck="true" data-placeholder="\(hint)">\(sanitize(body))</div></body></html>
 		"""
 	}
@@ -198,6 +227,7 @@ struct ComposerEditor: NSViewRepresentable {
 		};
 		const esc = s => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 		ed.addEventListener("input", () => { emit(); state(); });
+		if (window.ResizeObserver) new ResizeObserver(() => post("height", ed.offsetHeight)).observe(ed);
 		document.addEventListener("selectionchange", state);
 		ed.addEventListener("paste", e => {
 			e.preventDefault();
@@ -210,6 +240,7 @@ struct ComposerEditor: NSViewRepresentable {
 				window.__mf.run(k === "b" ? "bold" : k === "i" ? "italic" : "underline");
 				return;
 			}
+			if (e.key === "Escape") { post("escape", ""); return; }
 			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); saved = getSelection().rangeCount ? getSelection().getRangeAt(0).cloneRange() : null; post("link", ""); }
 		});
 		window.__mf = {
@@ -223,6 +254,12 @@ struct ComposerEditor: NSViewRepresentable {
 			},
 			clear() { ed.focus(); document.execCommand("removeFormat"); document.execCommand("unlink"); emit(); state(); },
 			focus() { ed.focus(); },
+			focusEnd() {
+				ed.focus();
+				const r = document.createRange(); r.selectNodeContents(ed); r.collapse(false);
+				const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+				post("height", ed.offsetHeight);
+			},
 			replaceAll(markup) {
 				ed.focus();
 				const r = document.createRange(); r.selectNodeContents(ed);

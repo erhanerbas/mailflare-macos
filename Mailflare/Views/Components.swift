@@ -267,13 +267,18 @@ struct TitlebarIconButton: View {
 	/// For buttons at the window's right edge: the tooltip ends at the button instead of centring on it.
 	var tooltipTrailing = false
 	var tooltipAbove = false
+	var iconSize: CGFloat = RailMetrics.iconSize
+	/// Shows a spinner in place of the icon while work is under way.
+	var isLoading = false
 	var action: () -> Void
 
 	@State private var isHovering = false
 
 	var body: some View {
 		Button(action: action) {
-			HIcon(icon, size: RailMetrics.iconSize)
+			Group {
+				if isLoading { ProgressView().controlSize(.small).scaleEffect(0.7) } else { HIcon(icon, size: iconSize) }
+			}
 				.frame(width: Self.size, height: Self.size)
 				.background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(isHovering ? AppTheme.railSelection.opacity(0.6) : .clear))
 				.contentShape(Rectangle())
