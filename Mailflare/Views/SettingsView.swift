@@ -314,6 +314,7 @@ private struct GeneralSettings: View {
 	@AppStorage(MessageAppearance.adaptKey) private var adaptColors = true
 	@AppStorage(ReadingSettings.markReadDelayKey) private var markReadDelay = 0
 	@AppStorage(ReadingSettings.loadRemoteContentKey) private var loadRemote = true
+	@AppStorage(ReadingSettings.showAvatarsKey) private var showAvatars = true
 	@State private var launchAtLogin = LaunchAtLogin.isEnabled
 
 	var body: some View {
@@ -339,7 +340,12 @@ private struct GeneralSettings: View {
 				detail: "Re-colors mail that has no dark styles of its own. The reader's color button overrides it per sender.",
 				isOn: $adaptColors)
 		}
-		SettingsGroup(title: "Reading") {
+		SettingsGroup(title: "Emails") {
+			SettingsToggle(
+				title: "Show avatars in the email list",
+				detail: "A sender's Gravatar, or their initial on a colored circle.",
+				isOn: $showAvatars)
+			SettingsDivider()
 			SettingsPicker(
 				title: "Mark as read",
 				options: [("Immediately", 0), ("After 3 seconds", 3), ("After 10 seconds", 10), ("Never", -1)],

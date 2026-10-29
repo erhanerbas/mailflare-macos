@@ -484,6 +484,8 @@ struct DropdownRow: View {
 	var trailing: AppIcon?
 	var isEnabled = true
 	var onDelete: (() -> Void)?
+	/// With `onDelete`, a pencil beside the trash on hover.
+	var onEdit: (() -> Void)?
 	/// Replaces the label's font where a menu wants it smaller.
 	var labelFont: Font?
 	var verticalPadding: CGFloat = 7
@@ -510,9 +512,18 @@ struct DropdownRow: View {
 			.buttonStyle(.plain)
 			.disabled(!isEnabled)
 			.opacity(isEnabled ? 1 : 0.4)
-			if let onDelete, isHovering {
-				Button(action: onDelete) { HIcon(.trash, size: 13).foregroundStyle(.secondary).padding(6).contentShape(Rectangle()) }
-					.buttonStyle(.plain).help("Delete").padding(.trailing, 6)
+			if (onDelete != nil || onEdit != nil), isHovering {
+				HStack(spacing: 0) {
+					if let onEdit {
+						Button(action: onEdit) { HIcon(.edit, size: 13).foregroundStyle(.secondary).padding(6).contentShape(Rectangle()) }
+							.buttonStyle(.plain).help("Edit")
+					}
+					if let onDelete {
+						Button(action: onDelete) { HIcon(.trash, size: 13).foregroundStyle(.secondary).padding(6).contentShape(Rectangle()) }
+							.buttonStyle(.plain).help("Delete")
+					}
+				}
+				.padding(.trailing, 6)
 			}
 		}
 		.onHover { isHovering = $0 }

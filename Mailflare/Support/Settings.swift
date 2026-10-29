@@ -58,6 +58,10 @@ enum ReadingSettings {
 	static let markReadDelayKey = "markReadDelay"
 	static let loadRemoteContentKey = "loadRemoteContent"
 	static let autoCheckUpdatesKey = "autoCheckUpdates"
+	static let showAvatarsKey = "showListAvatars"
+
+	/// Whether the message list shows a sender avatar beside each row.
+	static var showAvatars: Bool { UserDefaults.standard.object(forKey: showAvatarsKey) as? Bool ?? true }
 
 	/// Seconds before an opened message is marked read: 0 at once, -1 never.
 	static var markReadDelay: Int { UserDefaults.standard.object(forKey: markReadDelayKey) as? Int ?? 0 }

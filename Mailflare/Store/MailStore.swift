@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AppKit
+import SwiftUI
 import MailflareCore
 
 /// Hands core events back to the main actor.
@@ -64,6 +65,10 @@ final class MailStore {
 	/// After the assistant changed mail: refresh what is on screen.
 	func aiDidChangeMail() { invalidateCaches(); reload(); refreshMailboxes() }
 	let profiles = AccountProfiles()
+	/// Names and descriptions given to senders and recipients, kept on this Mac.
+	let contacts = ContactProfiles()
+	/// The rewrite prompts offered in the reply box: built in, and the user's own.
+	let aiPrompts = AIPromptLibrary()
 	@ObservationIgnored private(set) var avatars = AvatarCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("mailflare-avatars", isDirectory: true))
 
 	var sidebar: SidebarItem = .allInboxes
@@ -2071,7 +2076,7 @@ final class MailStore {
 	/// Queues a message in the core's outbox off the main thread (queuing copies attachments). A
 	/// failure to queue is reported and handed to `onFailure`; a failure to deliver surfaces through
 	/// the outbox event.
-	private func enqueue(_ message: OutgoingMessage, accountID acct: String, send: Bool, onFailure: @escaping () -> Void) {
+	private func enqueue(_ message: OutgoingMessage, accountID acct: String, send: Bool, onSuccess: (() -> Void)? = nil, onFailure: @escaping () -> Void) {
 		guard let core else { return }
 		if send {
 			// Stays up until the core reports the message sent, or that it could not be.
@@ -2084,6 +2089,7 @@ final class MailStore {
 				}.value
 				invalidateCaches()
 				if !send { showToast("Draft saved", detail: message.subject, icon: .check) }
+				onSuccess?()
 			} catch {
 				toast = nil
 				banner = "“\(message.subject.isEmpty ? "Your message" : message.subject)” could not be \(send ? "sent" : "saved"): \(describe(error))"
@@ -2103,18 +2109,36 @@ final class MailStore {
 		return QuickReplies.key(account: acct, message: raw)
 	}
 
+	/// A reply sent from the reply box, shown at the end of the message it answers.
+	struct SentReply: Identifiable {
+		let id = UUID()
+		let html: String
+		let to: String
+		let accountID: String
+		let date: Date
+	}
+
+	/// A dropdown drawn by the window's root view, above every pane (including web views), with its
+	/// bottom edge on top of `anchor`, a frame in the "mailflareRoot" coordinate space.
+	struct OverlayMenu {
+		var anchor: CGRect
+		var content: AnyView
+		var dismiss: () -> Void
+	}
+
+	var overlayMenu: OverlayMenu?
+
+	/// Replies sent from the reply box this session, by the listed message they answer.
+	private(set) var sentReplies: [String: [SentReply]] = [:]
+
 	/// Sends `html` as a reply to a listed message, as the composer's Reply would: to the sender, with
-	/// the subject, threading, signature and quoted original. The reply box clears at once; if the
-	/// reply can't be queued, `onFailure` gives the text back.
-	func sendQuickReply(to id: String, html: String, onFailure: @escaping () -> Void) {
-		guard let core else { return }
+	/// the subject, threading, signature and quoted original. The reply box keeps its text (and shows a
+	/// spinner) until the core reports the reply sent: then `onSent` runs and the reply joins the
+	/// message as a sent reply. If it can't be sent, `onFailure` runs and the text is still there.
+	func sendQuickReply(to id: String, html: String, onSent: @escaping () -> Void, onFailure: @escaping () -> Void) {
+		guard let core else { onFailure(); return }
 		let (acct, raw) = owner(of: id)
 		let key = quickReplyKey(id)
-		quickReplies.set("", for: key)
-		let failed: () -> Void = { [weak self] in
-			self?.quickReplies.set(html, for: key)
-			onFailure()
-		}
 		showToast("Sending…", detail: messages.first { $0.id == id }.map { "Re: \($0.subject)" } ?? "", icon: .send, isProgress: true, duration: 60)
 		Task {
 			do {
@@ -2123,11 +2147,19 @@ final class MailStore {
 				reply.body = reply.body.isEmpty ? html : html + reply.body
 				let message = try outgoing(reply)
 				guard !message.to.isEmpty else { throw CoreError.InvalidInput(message: "This message has no address to reply to.") }
-				enqueue(message, accountID: acct, send: true, onFailure: failed)
+				let sent = SentReply(html: html, to: message.to.map(\.formatted).joined(separator: ", "), accountID: acct, date: .now)
+				enqueue(message, accountID: acct, send: true, onSuccess: { [weak self] in
+					guard let self else { return }
+					quickReplies.set("", for: key)
+					withAnimation(.snappy(duration: 0.35)) {
+						self.sentReplies[id, default: []].append(sent)
+						onSent()
+					}
+				}, onFailure: onFailure)
 			} catch {
 				toast = nil
 				banner = "Your reply could not be sent: \(describe(error))"
-				failed()
+				onFailure()
 			}
 		}
 	}

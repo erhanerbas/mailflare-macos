@@ -192,6 +192,14 @@ final class AISettings {
 		return AIClient(baseURL: baseURL, apiKey: apiKey(for: provider.id), model: choice.model)
 	}
 
+	/// The client for `model` on a provider, when both are set and usable; otherwise AI Writer's.
+	func writerClient(providerID: String?, model: String?) -> AIClient? {
+		guard let providerID, let model = model?.trimmingCharacters(in: .whitespaces), !model.isEmpty,
+			  let provider = readyProviders.first(where: { $0.id == providerID }), let baseURL = provider.baseURL
+		else { return writerClient }
+		return AIClient(baseURL: baseURL, apiKey: apiKey(for: provider.id), model: model)
+	}
+
 	/// Picks the model for AI Writer, or nil to follow the assistant.
 	func selectWriter(_ choice: ModelChoice?) {
 		writerChoice = choice

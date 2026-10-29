@@ -707,7 +707,8 @@ private struct SwitcherRow<Leading: View, Text_: View>: View {
 	}
 }
 
-/// A round profile picture, or the initials on a blue circle when there is none.
+/// A round profile picture, or the initials on a hashed-color circle when there is none (the cache
+/// tries the server's picture, then Gravatar, before this).
 struct ProfileAvatar: View {
 	@Environment(MailStore.self) private var store
 	var key: String
@@ -721,9 +722,9 @@ struct ProfileAvatar: View {
 			} else {
 				Text(initials)
 					.font(.system(size: size * 0.42, weight: .semibold))
-					.foregroundStyle(.white)
+					.foregroundStyle(AvatarStyle.text)
 					.frame(maxWidth: .infinity, maxHeight: .infinity)
-					.background(Color(red: 0.12, green: 0.55, blue: 0.93))
+					.background(AvatarStyle.background(for: key))
 			}
 		}
 		.frame(width: size, height: size)
@@ -731,9 +732,8 @@ struct ProfileAvatar: View {
 	}
 
 	private var initials: String {
-		let parts = name.split(whereSeparator: { " .@".contains($0) }).prefix(2)
-		let letters = parts.compactMap(\.first).map { String($0).uppercased() }.joined()
-		return letters.isEmpty ? "?" : letters
+		let letter = name.trimmingCharacters(in: .whitespaces).first.map { String($0).uppercased() }
+		return letter ?? "?"
 	}
 }
 

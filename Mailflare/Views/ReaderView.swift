@@ -23,6 +23,7 @@ private struct MessageDetail: View {
 	let message: MessageSummary
 	@Environment(\.colorScheme) private var colorScheme
 	@State private var showDetails = false
+	@State private var editingContact = false
 	/// The AI summary saved with this message, kept in the store so the toolbar button can make it.
 	private var summary: String? { store.summaries[message.id] }
 	/// Whether this sender's mail is re-colored for the dark window; the toolbar's colors button sets it.
@@ -57,17 +58,29 @@ private struct MessageDetail: View {
 	private var allowsRemote: Bool { (loadRemoteContent && !isJunk) || loadRemoteOnce }
 
 	var body: some View {
-		VStack(spacing: 0) {
-			content
-			// Held below the message as it scrolls; a draft is edited, not replied to.
-			if store.role(of: message) != "drafts" { QuickReplyBox(message: message) }
-		}
+		// The reply box sticks to the bottom and the message scrolls under it; a draft is edited, not
+		// replied to. The fade lets the text go out behind the box instead of being cut off by it.
+		content
+			.safeAreaInset(edge: .bottom, spacing: 0) {
+				if store.role(of: message) != "drafts" {
+					QuickReplyBox(message: message)
+						.background {
+							LinearGradient(stops: [
+								.init(color: AppTheme.background.opacity(0), location: 0),
+								.init(color: AppTheme.background, location: 0.45),
+								.init(color: AppTheme.background, location: 1),
+							], startPoint: .top, endPoint: .bottom)
+							.padding(.top, -32)
+						}
+				}
+			}
 		.background(AppTheme.background)
 		.task { store.loadSavedSummary(for: message.id) }
 		.onChange(of: adaptByDefault) { _, _ in store.refreshAdaptColors() }
 	}
 
 	private var content: some View {
+		ScrollViewReader { scroller in
 		ScrollView {
 			VStack(alignment: .leading, spacing: 0) {
 				VStack(alignment: .leading, spacing: 12) {
@@ -105,8 +118,18 @@ private struct MessageDetail: View {
 						}
 					}
 				}
+				// Replies sent from the reply box slide in at the end, like the rest of the conversation.
+				ForEach(store.sentReplies[message.id] ?? []) { reply in
+					SentReplyView(reply: reply)
+						.transition(.move(edge: .bottom).combined(with: .opacity))
+				}
+				Color.clear.frame(height: 1).id("end")
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
+		}
+		.onChange(of: store.sentReplies[message.id]?.count ?? 0) { _, _ in
+			withAnimation(.snappy(duration: 0.35)) { scroller.scrollTo("end", anchor: .bottom) }
+		}
 		}
 	}
 
@@ -153,7 +176,12 @@ private struct MessageDetail: View {
 		let to = store.detail?.to ?? []
 		let cc = store.detail?.cc ?? []
 		return HStack(alignment: .top, spacing: 10) {
-			Avatar(contact: message.sender)
+			// Opens the sender's profile: picture, name and description.
+			Button { editingContact = true } label: {
+				SenderAvatar(email: message.fromEmail, name: message.senderDisplay, size: 36)
+			}
+			.buttonStyle(.plain).help("Edit contact")
+			.popover(isPresented: $editingContact, arrowEdge: .bottom) { ContactEditor(contact: message.sender) }
 			VStack(alignment: .leading, spacing: 3) {
 				HStack(alignment: .firstTextBaseline, spacing: 6) {
 					senderLine
@@ -171,7 +199,7 @@ private struct MessageDetail: View {
 						// Recipients arrive with the body.
 						SkeletonBar(width: 220, height: 10).padding(.vertical, 3)
 					} else {
-						Text(recipientLine(to: to, cc: cc))
+						Text(recipientLine("To", to))
 							.font(Typography.notice).foregroundStyle(.secondary)
 							.lineLimit(showDetails ? nil : 1).truncationMode(.tail)
 							.textSelection(.enabled)
@@ -181,6 +209,13 @@ private struct MessageDetail: View {
 							.fixedSize()
 					}
 					Spacer(minLength: 0)
+				}
+				// Cc has its own line. (The core does not return Bcc for received mail.)
+				if !cc.isEmpty {
+					Text(recipientLine("Cc", cc))
+						.font(Typography.notice).foregroundStyle(.secondary)
+						.lineLimit(showDetails ? nil : 1).truncationMode(.tail)
+						.textSelection(.enabled)
 				}
 				if showDetails {
 					VStack(alignment: .leading, spacing: 2) {
@@ -194,20 +229,52 @@ private struct MessageDetail: View {
 	}
 
 	/// "Name  address", the name bold and the address quieter; just the address when there is no name.
+	/// A name given to the contact on this Mac replaces the sender's own. Clicking opens the contact.
 	private var senderLine: some View {
-		let name = message.senderDisplay
+		let name = store.contacts.name(for: message.fromEmail) ?? message.senderDisplay
 		let address = message.fromEmail
 		let named = !name.isEmpty && name.lowercased() != address.lowercased()
-		return (Text(named ? name : address).font(Typography.bodySemibold)
-			+ Text(named ? "  \(address)" : "").font(Typography.notice).foregroundStyle(.secondary))
-			.lineLimit(1).truncationMode(.tail).textSelection(.enabled)
+		return Button { editingContact = true } label: {
+			(Text(named ? name : address).font(Typography.bodySemibold)
+				+ Text(named ? "  \(address)" : "").font(Typography.notice).foregroundStyle(.secondary))
+				.lineLimit(1).truncationMode(.tail)
+		}
+		.buttonStyle(.plain)
 	}
 
-	/// "To: Name <address>, …" and "Cc: …", every recipient with its address.
-	private func recipientLine(to: [EmailAddress], cc: [EmailAddress]) -> String {
-		var s = "To: " + to.map(\.formatted).joined(separator: ", ")
-		if !cc.isEmpty { s += "   Cc: " + cc.map(\.formatted).joined(separator: ", ") }
-		return s
+	/// "To: Name <address>, …" or "Cc: …", every recipient with its address.
+	private func recipientLine(_ label: String, _ people: [EmailAddress]) -> String {
+		"\(label): " + people.map(\.formatted).joined(separator: ", ")
+	}
+}
+
+/// A reply sent from the reply box, shown after the message with the same parts: who it is from, who
+/// it went to, when, and the text.
+private struct SentReplyView: View {
+	@Environment(MailStore.self) private var store
+	let reply: MailStore.SentReply
+	@State private var height: CGFloat = 0
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 0) {
+			Divider().overlay(AppTheme.cardStroke)
+			HStack(alignment: .top, spacing: 10) {
+				ProfileAvatar(
+					key: AvatarCache.key(account: reply.accountID),
+					name: store.accountList.first { $0.id == reply.accountID }.map(store.accountName) ?? "Me", size: 36)
+				VStack(alignment: .leading, spacing: 3) {
+					HStack(alignment: .firstTextBaseline, spacing: 6) {
+						Text("You").font(Typography.bodySemibold)
+						Spacer(minLength: 8)
+						Text(MailDate.full(reply.date)).font(Typography.meta).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+					}
+					Text("To: \(reply.to)").font(Typography.notice).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+				}
+			}
+			.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
+			MessageWebView(html: reply.html, mode: .asIs, contentHeight: $height)
+				.frame(height: max(height, 40))
+		}
 	}
 }
 
@@ -272,9 +339,9 @@ struct MessageWebView: NSViewRepresentable {
 		<!doctype html>\(htmlTag)<head><meta charset="utf-8">
 		<meta http-equiv="Content-Security-Policy" content="\(csp)">
 		<meta name="color-scheme" content="\(scheme)">
-		<style>html,body{margin:0;padding:0}\(paper)
-		#c{font:14px -apple-system,system-ui;padding:16px 20px;word-wrap:break-word}
-		img{max-width:100%;height:auto}pre{font-family:inherit}</style></head><body><div id="c">\(html)</div></body></html>
+		<style>html,body{margin:0;padding:0;overflow-x:hidden}\(paper)
+		#c{font:14px -apple-system,system-ui;padding:16px 20px;word-wrap:break-word;overflow-wrap:anywhere}
+		img{max-width:100%;height:auto}pre{font-family:inherit;white-space:pre-wrap}</style></head><body><div id="c">\(html)</div></body></html>
 		"""
 		view.loadHTMLString(doc, baseURL: nil)
 	}
@@ -304,9 +371,21 @@ struct MessageWebView: NSViewRepresentable {
 			measure(webView)
 		}
 
-		/// The wrapper's own height, which does not stretch to the view's, so it can shrink again.
+		/// Mail with fixed-width layouts (tables, wide images) is zoomed down to the view's width
+		/// instead of scrolling sideways; narrower content stays full size. Returns the wrapper's
+		/// own height, which does not stretch to the view's, so it can shrink again.
+		private static let fitScript = """
+		(function(){
+		var c=document.getElementById('c')||document.body;
+		c.style.zoom='';
+		var w=document.documentElement.clientWidth,s=c.scrollWidth;
+		if(w>0&&s>w+1){c.style.zoom=String(w/s);}
+		return c.getBoundingClientRect().height;
+		})()
+		"""
+
 		func measure(_ view: WKWebView) {
-			view.evaluateJavaScript("(document.getElementById('c') || document.body).offsetHeight") { [weak self] result, _ in
+			view.evaluateJavaScript(Self.fitScript) { [weak self] result, _ in
 				guard let height = (result as? NSNumber)?.doubleValue, height > 0 else { return }
 				DispatchQueue.main.async { self?.onHeight(CGFloat(height.rounded(.up))) }
 			}

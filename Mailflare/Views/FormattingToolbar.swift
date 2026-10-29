@@ -7,6 +7,8 @@ struct FormattingToolbar<Trailing: View>: View {
 	/// Glyph size of the tools; the reply box uses smaller ones.
 	var iconSize: CGFloat = RailMetrics.iconSize
 	@ViewBuilder var trailing: Trailing
+	/// A host's own tool at the near end, before Bold (the reply box puts AI rewrites here).
+	var leading: AnyView? = nil
 
 	@State private var linkOpen = false
 	@State private var linkURL = ""
@@ -14,6 +16,10 @@ struct FormattingToolbar<Trailing: View>: View {
 	var body: some View {
 		let f = controller.formats
 		HStack(spacing: 2) {
+			if let leading {
+				leading
+				divider
+			}
 			TitlebarIconButton(icon: .bold, help: "Bold (⌘B)", isActive: f.bold, iconSize: iconSize) { controller.bold() }
 			TitlebarIconButton(icon: .italic, help: "Italic (⌘I)", isActive: f.italic, iconSize: iconSize) { controller.italic() }
 			TitlebarIconButton(icon: .underline, help: "Underline (⌘U)", isActive: f.underline, iconSize: iconSize) { controller.underline() }
@@ -35,6 +41,12 @@ struct FormattingToolbar<Trailing: View>: View {
 		.onChange(of: controller.linkRequested) { _, requested in
 			if requested { controller.linkRequested = false; openLink() }
 		}
+	}
+
+	func withLeading<V: View>(_ view: V) -> Self {
+		var copy = self
+		copy.leading = AnyView(view)
+		return copy
 	}
 
 	private var divider: some View {

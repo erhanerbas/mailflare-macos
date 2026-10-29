@@ -16,6 +16,11 @@ struct QuickReplyBox: View {
 	/// The editor web view has loaded; until then the one-line text stands in for it.
 	@State private var editorReady = false
 	@State private var controller = ComposerController()
+	/// The reply is on its way: Send shows a spinner and does nothing until it is sent or fails.
+	@State private var sending = false
+	/// The AI prompt list is open, or a rewrite is running; the box stays open for both.
+	@State private var aiMenuOpen = false
+	@State private var aiRunning = false
 
 	/// One line of the editor's 14 px text at its 1.45 line height.
 	static let lineHeight: CGFloat = 21
@@ -34,6 +39,9 @@ struct QuickReplyBox: View {
 		VStack(alignment: .leading, spacing: 4) {
 			if isActive {
 				FormattingToolbar(controller: controller, iconSize: RailMetrics.iconSize - 2)
+					.withLeading(AIPromptMenu(
+						controller: controller, html: html, message: message, iconSize: RailMetrics.iconSize - 2,
+						isOpen: $aiMenuOpen, isRunning: $aiRunning))
 					.padding(.horizontal, -4)
 					.transition(.opacity)
 			}
@@ -52,7 +60,7 @@ struct QuickReplyBox: View {
 		.overlay(alignment: .bottomTrailing) { sendButton.padding(.trailing, 6).padding(.bottom, (Self.inactiveHeight - Self.sendSize) / 2) }
 		.contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 		.onTapGesture { if isActive { controller.focus() } else { activate() } }
-		.background(OutsideClickMonitor(isActive: isActive) { deactivate() })
+		.background(OutsideClickMonitor(isActive: isActive && !aiMenuOpen && !aiRunning) { deactivate() })
 		.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 14)
 		.onAppear { html = store.quickReplies.reply(for: key) }
 	}
@@ -84,19 +92,22 @@ struct QuickReplyBox: View {
 		)
 		.frame(height: editorHeight)
 		.opacity(editorReady ? 1 : 0)
+		.allowsHitTesting(!sending && !aiRunning)
 	}
 
 	private var sendButton: some View {
 		Button(action: send) {
-			HIcon(.sent, size: 14)
+			Group {
+				if sending { ProgressView().controlSize(.small).scaleEffect(0.65).colorScheme(.dark) } else { HIcon(.sent, size: 14) }
+			}
 				.foregroundStyle(AppTheme.prominentPillText)
 				.frame(width: Self.sendSize, height: Self.sendSize)
 				.background(Circle().fill(AppTheme.prominentPillFill))
 				.contentShape(Circle())
 		}
 		.buttonStyle(.plain)
-		.disabled(isBlank)
-		.opacity(isBlank ? 0.4 : 1)
+		.disabled(isBlank || sending || aiRunning)
+		.opacity(isBlank || aiRunning ? 0.4 : 1)
 		.keyboardShortcut(isActive ? KeyboardShortcut(.return, modifiers: .command) : nil)
 		.help("Send Reply (⌘↩)")
 	}
@@ -116,14 +127,16 @@ struct QuickReplyBox: View {
 
 	private func send() {
 		let body = html
-		guard !isBlank else { return }
-		html = ""
-		textHeight = Self.lineHeight
-		withAnimation(Self.animation) {
+		guard !isBlank, !sending, !aiRunning else { return }
+		sending = true
+		// The text stays until the reply is sent; then it leaves the box and joins the message.
+		store.sendQuickReply(to: message.id, html: body, onSent: {
+			sending = false
+			html = ""
+			textHeight = Self.lineHeight
 			isActive = false
 			editorReady = false
-		}
-		store.sendQuickReply(to: message.id, html: body) { html = body }
+		}, onFailure: { sending = false })
 	}
 }
 

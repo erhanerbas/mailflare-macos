@@ -83,6 +83,9 @@ struct ContentView: View {
 		.onChange(of: store.sidebar) { _, _ in drawerOpen = false }
 		.onChange(of: store.settingsPage) { _, _ in drawerOpen = false }
 		.ignoresSafeArea()
+		.coordinateSpace(name: "mailflareRoot")
+		// Dropdowns that must sit above every pane, web views included.
+		.overlay(alignment: .topLeading) { if let menu = store.overlayMenu { OverlayMenuHost(menu: menu) } }
 		// An empty toolbar keeps the unified titlebar band, which centres the traffic lights on
 		// `titlebarRowCenter`; everything in the band is drawn by this view.
 		.toolbar { ToolbarItem(placement: .navigation) { Color.clear.frame(width: 1, height: 1) } }
@@ -305,46 +308,125 @@ struct ContentView: View {
 		.padding(.top, WindowChromeMetrics.titlebarRowCenter - 14)
 	}
 
+	/// Message actions in the order they leave the header as it narrows (first to go, first listed
+	/// in `hideOrder`); the ones that go move into the More menu. Flag and More always stay.
+	private enum HeaderAction: CaseIterable {
+		case reply, replyAll, forward, archive, trash, junk, summarize, colors
+		static let hideOrder: [HeaderAction] = [.colors, .summarize, .junk, .forward, .replyAll, .archive, .trash, .reply]
+	}
+
+	/// The header actions that apply to this message.
+	private func applicableActions(_ message: MessageSummary, role: String?) -> Set<HeaderAction> {
+		var set: Set<HeaderAction> = [.trash]
+		guard role != "drafts" else { return set }
+		set.formUnion([.reply, .forward])
+		if store.canReplyAll { set.insert(.replyAll) }
+		if role != "archive" { set.insert(.archive) }
+		if role != "junk" && role != "sent" { set.insert(.junk) }
+		if store.ai.isConfigured { set.insert(.summarize) }
+		// Only where the body has no dark styles of its own to defer to.
+		if colorScheme == .dark, columnScheme == nil, let html = store.detail.flatMap({ $0.summary.id == message.id ? $0.html : nil }),
+		   !MessageAppearance.supportsDark(html) {
+			set.insert(.colors)
+		}
+		return set
+	}
+
+	/// The width of the header's reader section: from the reader's leading edge (which lines up with
+	/// the message content) to where the actions end.
+	private var headerActionsSpace: CGFloat {
+		guard windowWidth > 0 else { return .infinity }
+		let readerLeft = layout.single ? 130 : (layout.showSidebar ? layout.sidebarW : 0) + layout.listW + WindowChromeMetrics.cardInset
+		return windowWidth - readerLeft - (WindowChromeMetrics.cardInset + 8 + toggleInset) - 20
+	}
+
+	/// How wide the header row is with `shown` actions: buttons, separators and the 8pt gaps.
+	private func headerActionsWidth(_ shown: Set<HeaderAction>, isDraft: Bool) -> CGFloat {
+		func count(_ actions: [HeaderAction]) -> Int { actions.filter(shown.contains).count }
+		let first = count([.reply, .replyAll, .forward]), second = count([.archive, .trash, .junk])
+		let buttons = first + second + count([.summarize, .colors]) + (isDraft ? 0 : 2)
+		let separators = 1 + (first > 0 ? 1 : 0) + (second > 0 && !isDraft ? 1 : 0)
+		let items = buttons + separators
+		return CGFloat(buttons) * TitlebarIconButton.size + CGFloat(separators) * 17 + CGFloat(max(items - 1, 0)) * 8
+	}
+
+	private func perform(_ action: HeaderAction, on message: MessageSummary) {
+		switch action {
+		case .reply: store.reply(to: message.id, all: false)
+		case .replyAll: store.reply(to: message.id, all: true)
+		case .forward: store.forward(message.id)
+		case .archive: store.archive(message.id)
+		case .trash: store.trash(message.id)
+		case .junk: store.junk(message.id)
+		case .summarize: store.summarizeSelected()
+		case .colors: store.toggleAdaptColors()
+		}
+	}
+
+	/// Keeps a hidden action's keyboard shortcut working.
+	@ViewBuilder
+	private func hiddenShortcut(_ action: HeaderAction, message: MessageSummary) -> some View {
+		let button = Button("") { perform(action, on: message) }
+		switch action {
+		case .reply: button.keyboardShortcut("r")
+		case .replyAll: button.keyboardShortcut("r", modifiers: [.command, .shift])
+		case .forward: button.keyboardShortcut("f", modifiers: [.command, .shift])
+		case .archive: button.keyboardShortcut("a", modifiers: [.command, .control])
+		case .trash: button.keyboardShortcut(.delete, modifiers: .command)
+		case .junk: button.keyboardShortcut("j", modifiers: [.command, .shift])
+		case .summarize, .colors: EmptyView()
+		}
+	}
+
 	/// The actions that apply to the selected message, on the card's trailing edge, grouped by
-	/// separators. Nothing shows without a selection.
+	/// separators. Nothing shows without a selection. As the reader narrows they leave one at a time
+	/// into the More menu, and come back as it widens.
 	private var titlebarTrailing: some View {
 		let message = store.multiSelection.isEmpty ? store.selectedMessage : nil
 		let role = message.map { store.role(of: $0) } ?? nil
 		let isDraft = role == "drafts"
+		var shown = message.map { applicableActions($0, role: role) } ?? []
+		let applicable = shown
+		for action in HeaderAction.hideOrder where headerActionsWidth(shown, isDraft: isDraft) > headerActionsSpace {
+			shown.remove(action)
+		}
+		let hidden = HeaderAction.allCases.filter { applicable.contains($0) && !shown.contains($0) }
 		return HStack(spacing: 8) {
 			if let message {
 				if !isDraft {
-					TitlebarIconButton(icon: .reply, help: "Reply (⌘R)") { store.reply(to: message.id, all: false) }
-						.keyboardShortcut("r")
-					if store.canReplyAll {
+					if shown.contains(.reply) {
+						TitlebarIconButton(icon: .reply, help: "Reply (⌘R)") { store.reply(to: message.id, all: false) }
+							.keyboardShortcut("r")
+					}
+					if shown.contains(.replyAll) {
 						TitlebarIconButton(icon: .replyAll, help: "Reply All (⇧⌘R)") { store.reply(to: message.id, all: true) }
 							.keyboardShortcut("r", modifiers: [.command, .shift])
 					}
-					TitlebarIconButton(icon: .forward, help: "Forward (⇧⌘F)") { store.forward(message.id) }
-						.keyboardShortcut("f", modifiers: [.command, .shift])
-					separator
+					if shown.contains(.forward) {
+						TitlebarIconButton(icon: .forward, help: "Forward (⇧⌘F)") { store.forward(message.id) }
+							.keyboardShortcut("f", modifiers: [.command, .shift])
+					}
+					if shown.contains(.reply) || shown.contains(.replyAll) || shown.contains(.forward) { separator }
 				}
-				if role != "archive" && !isDraft {
+				if shown.contains(.archive) {
 					TitlebarIconButton(icon: .archive, help: "Archive (⌃⌘A)") { store.archive(message.id) }
 						.keyboardShortcut("a", modifiers: [.command, .control])
 				}
-				TitlebarIconButton(icon: .trash, help: "Move to Trash (⌘⌫)") { store.trash(message.id) }
-					.keyboardShortcut(.delete, modifiers: .command)
-				if role != "junk" && role != "sent" && !isDraft {
+				if shown.contains(.trash) {
+					TitlebarIconButton(icon: .trash, help: "Move to Trash (⌘⌫)") { store.trash(message.id) }
+						.keyboardShortcut(.delete, modifiers: .command)
+				}
+				if shown.contains(.junk) {
 					TitlebarIconButton(icon: .junk, help: "Move to Junk (⇧⌘J)") { store.junk(message.id) }
 						.keyboardShortcut("j", modifiers: [.command, .shift])
 				}
 				if !isDraft {
-					separator
-                    
-                    if store.ai.isConfigured {
-                        TitlebarIconButton(icon: .aiContent, help: store.summarizingID == message.id ? "Summarizing…" : "Summarize with AI",
-                                           isEnabled: store.detail?.summary.id == message.id, isLoading: store.summarizingID == message.id) { store.summarizeSelected() }
-                    }
-                    
-					// Only where the body has no dark styles of its own to defer to.
-					if colorScheme == .dark, columnScheme == nil, let html = store.detail.flatMap({ $0.summary.id == message.id ? $0.html : nil }),
-					   !MessageAppearance.supportsDark(html) {
+					if shown.contains(.archive) || shown.contains(.trash) || shown.contains(.junk) { separator }
+					if shown.contains(.summarize) {
+						TitlebarIconButton(icon: .aiContent, help: store.summarizingID == message.id ? "Summarizing…" : "Summarize with AI",
+										   isEnabled: store.detail?.summary.id == message.id, isLoading: store.summarizingID == message.id) { store.summarizeSelected() }
+					}
+					if shown.contains(.colors) {
 						TitlebarIconButton(
 							icon: .colors,
 							help: store.adaptColors ? "Show Original Colors" : "Adapt Colors to Dark Mode",
@@ -352,12 +434,15 @@ struct ContentView: View {
 						) { store.toggleAdaptColors() }
 					}
 					flagMenu(message)
-					moreMenu(message, role: role)
+					moreMenu(message, role: role, hidden: hidden)
 				}
-                
-                separator
+				separator
 			}
 		}
+		.background {
+			if let message { ForEach(hidden, id: \.self) { hiddenShortcut($0, message: message) }.opacity(0).frame(width: 0, height: 0) }
+		}
+		.animation(.snappy(duration: 0.2), value: hidden)
 		.padding(.trailing, WindowChromeMetrics.cardInset + 8 + toggleInset)
 		.padding(.top, WindowChromeMetrics.titlebarRowCenter - TitlebarIconButton.size / 2)
 	}
@@ -380,7 +465,7 @@ struct ContentView: View {
 
 	/// The "…" button and its dropdown: the Settings dropdown's card, opening below the button with
 	/// its right edge on the button's.
-	private func moreMenu(_ message: MessageSummary, role: String?) -> some View {
+	private func moreMenu(_ message: MessageSummary, role: String?, hidden: [HeaderAction]) -> some View {
 		let unsubscribe = store.detail.flatMap { $0.summary.id == message.id ? UnsubscribeLink.find(in: $0.html) : nil }
 		func choose(_ action: () -> Void) {
 			withAnimation(.snappy(duration: 0.2)) { moreOpen = false }
@@ -392,6 +477,25 @@ struct ContentView: View {
 		.overlay(alignment: .topTrailing) {
 			if moreOpen {
 				DropdownCard(width: 210, anchor: .topTrailing) {
+					// Header actions that no longer fit. Archive, Junk and Trash are already under "Move to".
+					let moved = hidden.filter { ![.archive, .trash, .junk].contains($0) }
+					ForEach(moved, id: \.self) { action in
+						switch action {
+						case .reply: DropdownRow(label: "Reply", icon: .reply) { choose { perform(action, on: message) } }
+						case .replyAll: DropdownRow(label: "Reply All", icon: .replyAll) { choose { perform(action, on: message) } }
+						case .forward: DropdownRow(label: "Forward", icon: .forward) { choose { perform(action, on: message) } }
+						case .summarize:
+							DropdownRow(label: "Summarize with AI", icon: .aiContent, isEnabled: store.detail?.summary.id == message.id && store.summarizingID != message.id) {
+								choose { perform(action, on: message) }
+							}
+						case .colors:
+							DropdownRow(label: store.adaptColors ? "Show Original Colors" : "Adapt Colors to Dark Mode", icon: .colors) {
+								choose { perform(action, on: message) }
+							}
+						case .archive, .trash, .junk: EmptyView()
+						}
+					}
+					if !moved.isEmpty { DropdownDivider() }
 					DropdownRow(label: "Unsubscribe", icon: .unsubscribe, isEnabled: unsubscribe != nil) {
 						choose { if let unsubscribe { NSWorkspace.shared.open(unsubscribe) } }
 					}

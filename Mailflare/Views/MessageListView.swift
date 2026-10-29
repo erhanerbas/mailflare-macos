@@ -48,6 +48,8 @@ struct MessageListView: View {
 	/// The space above the first row and below the last.
 	static let listInset: CGFloat = 4
 	@State private var metrics = RowMetrics()
+	/// Read so the list lays out again when the setting changes (row insets and heights follow it).
+	@AppStorage(ReadingSettings.showAvatarsKey) private var showAvatars = true
 	@State private var listWidth: CGFloat = 360
 	/// Rows are kept for the visible page plus this many pages above and below it.
 	private static let bufferPages = 2
@@ -98,7 +100,8 @@ struct MessageListView: View {
 		.overlay { menuLayer }
 		// Last, so it sees right clicks before anything below; it lets every other event through.
 		.overlay { RightClickCatcher { openMenu(at: $0) } }
-		.onChange(of: store.messages) { _, _ in loadMoreIfNearEnd() }
+		.onChange(of: store.messages) { _, _ in resync(); loadMoreIfNearEnd() }
+		.onChange(of: listWidth) { _, _ in resync() }
 		// Older mail stored by the server fetch, which may not change the rows listed yet.
 		.onChange(of: store.total) { _, _ in loadMoreIfNearEnd() }
 		.overlay {
@@ -131,6 +134,12 @@ struct MessageListView: View {
 		loadMoreIfNearEnd()
 	}
 
+	/// After the messages or their heights change: the row at the scroll offset, redrawn if it moved.
+	private func resync() {
+		let row = metrics.row(at: scrollPosition.offset)
+		if row != firstVisibleRow { firstVisibleRow = row }
+	}
+
 	/// Tells the store where the reader is, after a scroll and after the list changes (a short list
 	/// that does not fill the pane never scrolls); it decides what to load ahead.
 	private func loadMoreIfNearEnd() {
@@ -159,7 +168,11 @@ struct MessageListView: View {
 		let count = messages.count
 		metrics.update(messages: messages, width: listWidth, isDraft: { store.role(of: $0) == "drafts" })
 		let pageRows = max(1, Int((viewportHeight / Self.rowHeight).rounded(.up)))
-		let first = min(firstVisibleRow, max(count - 1, 0))
+		// Worked out from the real scroll offset against these messages' heights. `firstVisibleRow` is only
+		// what makes the list redraw when that changes: after a switch to another folder the old row
+		// number maps to a different place (rows differ in height), which left the viewport on spacers.
+		_ = firstVisibleRow
+		let first = min(metrics.row(at: scrollPosition.offset), max(count - 1, 0))
 		let start = max(0, first - Self.bufferPages * pageRows)
 		let end = min(count, first + (Self.bufferPages + 1) * pageRows)
 		return VStack(spacing: 0) {
@@ -333,10 +346,17 @@ struct RightClickCatcher: NSViewRepresentable {
 /// One message. Its text is inset `textInset` from the left, the unread dot sits in that margin,
 /// and a hairline closes it off from the next row.
 struct MessageRow: View {
-	/// Where a row's text starts: room on the left for the unread dot, and breathing space for read mail.
-	static let textInset: CGFloat = 30
+	/// The avatar column starts as far from the left edge as the text ends from the right.
+	static let avatarInset: CGFloat = 16
+	static let avatarSize: CGFloat = 32
+	static let avatarTop: CGFloat = 10
+	/// Where a row's text starts: after the avatar column, or past the unread dot's margin without one.
+	static var textInset: CGFloat { ReadingSettings.showAvatars ? avatarInset + avatarSize + 10 : 30 }
+	/// The shortest a row can be: the avatar and its margins.
+	static var minHeight: CGFloat { ReadingSettings.showAvatars ? avatarTop + avatarSize + 9 : 34 }
 
 	@Environment(MailStore.self) private var store
+	@AppStorage(ReadingSettings.showAvatarsKey) private var showAvatars = true
 
 	let message: MessageSummary
 	let isDraft: Bool
@@ -353,7 +373,7 @@ struct MessageRow: View {
 
 	/// The first line: the sender (or a draft's recipients).
 	private var title: String {
-		let name = isDraft ? message.toDisplay : message.senderDisplay
+		let name = isDraft ? message.toDisplay : (store.contacts.name(for: message.fromEmail) ?? message.senderDisplay)
 		return name.trimmingCharacters(in: .whitespaces)
 	}
 
@@ -365,14 +385,30 @@ struct MessageRow: View {
 		Text("(No Subject)").font(Typography.body.italic()).foregroundStyle(.tertiary).lineLimit(1)
 	}
 
+	/// Unread mail is bold and at full strength; read mail is lighter and a little dimmed.
+	private var titleFont: Font { message.seen ? Typography.body.weight(.medium) : Typography.body.weight(.bold) }
+	private var subjectFont: Font { message.seen ? Typography.body : Typography.body.weight(.semibold) }
+	private var dim: Double { message.seen ? 0.68 : 1 }
+
+	/// The blue dot for unread mail, on the row's last line of text and at the avatar's x (the left
+	/// margin when avatars are off). `lineHeight` is that line's height, which it is centered on.
+	@ViewBuilder
+	private func unreadDot(isLast: Bool, lineHeight: CGFloat) -> some View {
+		if isLast && !message.seen {
+			let dotX = showAvatars ? MessageRow.avatarInset + (MessageRow.avatarSize - 7) / 2 : 15
+			Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+				.offset(x: dotX - MessageRow.textInset, y: 3.5 - lineHeight / 2)
+		}
+	}
+
 	var body: some View {
 		VStack(alignment: .leading, spacing: 2) {
 			HStack {
 				// With no sender, the subject (or its placeholder) takes the title's place.
 				if title.isEmpty && !isDraft {
-					if subject.isEmpty { noSubject } else { Text(subject).font(Typography.bodySemibold).lineLimit(1) }
+					if subject.isEmpty { noSubject } else { Text(subject).font(titleFont).opacity(dim).lineLimit(1) }
 				} else {
-					Text(title.isEmpty ? "Draft" : title).font(Typography.bodySemibold).lineLimit(1)
+					Text(title.isEmpty ? "Draft" : title).font(titleFont).opacity(dim).lineLimit(1)
 				}
 				Spacer(minLength: 4)
 				if title.isEmpty && !isDraft {
@@ -385,16 +421,21 @@ struct MessageRow: View {
 				Text(MailDate.list(message.date))
 					.font(Typography.meta).foregroundStyle(.secondary).lineLimit(1).fixedSize()
 			}
+			.overlay(alignment: .bottomLeading) {
+				unreadDot(isLast: preview.isEmpty && title.isEmpty && !isDraft, lineHeight: RowMetrics.bodyLine)
+			}
 			if !(title.isEmpty && !isDraft) {
 				HStack(spacing: 4) {
-					if subject.isEmpty { noSubject } else { Text(subject).font(Typography.body).lineLimit(1) }
+					if subject.isEmpty { noSubject } else { Text(subject).font(subjectFont).opacity(dim).lineLimit(1) }
 					Spacer(minLength: 4)
 					if message.hasAttachment { HIcon(.attachment, size: 13).foregroundStyle(.secondary) }
 					if message.flagged { HIcon(.flag, size: 13).foregroundStyle(.orange) }
 				}
+				.overlay(alignment: .bottomLeading) { unreadDot(isLast: preview.isEmpty, lineHeight: RowMetrics.bodyLine) }
 			}
 			if !preview.isEmpty {
-				Text(preview).font(Typography.notice).foregroundStyle(.secondary).lineLimit(2)
+				Text(preview).font(Typography.notice).foregroundStyle(.secondary).opacity(message.seen ? 0.8 : 1).lineLimit(2)
+					.overlay(alignment: .bottomLeading) { unreadDot(isLast: true, lineHeight: RowMetrics.noticeLine) }
 			}
 		}
 		.padding(.leading, MessageRow.textInset)
@@ -407,8 +448,9 @@ struct MessageRow: View {
 				.padding(.horizontal, 6)
 		)
 		.overlay(alignment: .topLeading) {
-			if !message.seen {
-				Circle().fill(Color.accentColor).frame(width: 7, height: 7).padding(.leading, MessageRow.textInset - 15).padding(.top, 16)
+			if showAvatars {
+				SenderAvatar(email: isDraft ? "" : message.fromEmail, name: title, size: MessageRow.avatarSize)
+					.padding(.leading, MessageRow.avatarInset).padding(.top, MessageRow.avatarTop)
 			}
 		}
 		.overlay(alignment: .bottom) {
@@ -418,6 +460,43 @@ struct MessageRow: View {
 		}
 		.contentShape(Rectangle())
 		.onHover { isHovering = $0 }
+	}
+}
+
+/// A sender's picture: their Gravatar when they have one, otherwise their initial on a color
+/// picked from a hash of the address (the same palette and hash as the web app).
+struct SenderAvatar: View {
+	@Environment(MailStore.self) private var store
+
+	let email: String
+	let name: String
+	var size: CGFloat = 32
+
+	private var identity: String {
+		let address = email.trimmingCharacters(in: .whitespaces).lowercased()
+		return address.isEmpty ? name.trimmingCharacters(in: .whitespaces).lowercased() : address
+	}
+
+	private var initial: String {
+		let source = (store.contacts.name(for: email) ?? name).trimmingCharacters(in: .whitespaces)
+		return String((source.isEmpty ? email : source).prefix(1)).uppercased()
+	}
+
+	var body: some View {
+		Group {
+			if let image = store.avatars.images[AvatarCache.contactKey(email)] {
+				Image(nsImage: image).resizable().scaledToFill()
+			} else {
+				Text(initial.isEmpty ? "?" : initial)
+					.font(.system(size: size * 0.42, weight: .semibold))
+					.foregroundStyle(AvatarStyle.text)
+					.frame(maxWidth: .infinity, maxHeight: .infinity)
+					.background(AvatarStyle.background(for: identity))
+			}
+		}
+		.frame(width: size, height: size)
+		.clipShape(Circle())
+		.task(id: email) { store.avatars.loadContact(email: email) }
 	}
 }
 
@@ -436,8 +515,8 @@ final class RowMetrics {
 
 	private static let noticeFont = NSFont.systemFont(ofSize: Typography.baseSize - 1)
 	private static func lineHeight(_ font: NSFont) -> CGFloat { ceil(font.ascender - font.descender + font.leading) }
-	private static let noticeLine = lineHeight(noticeFont)
-	private static let bodyLine = lineHeight(NSFont.systemFont(ofSize: Typography.baseSize))
+	static let noticeLine = lineHeight(noticeFont)
+	static let bodyLine = lineHeight(NSFont.systemFont(ofSize: Typography.baseSize))
 
 	func update(messages: [MessageSummary], width: CGFloat, isDraft: (MessageSummary) -> Bool) {
 		// Preview text spans the row minus its insets.
@@ -482,7 +561,7 @@ final class RowMetrics {
 		if !(hasSender || isDraft) { h -= 2 + Self.bodyLine }
 		h -= CGFloat(2 - previewLines) * Self.noticeLine
 		if previewLines == 0 { h -= 2 }
-		return max(ceil(h), 34)
+		return max(ceil(h), MessageRow.minHeight)
 	}
 
 	private func previewLineCount(_ message: MessageSummary) -> Int {
